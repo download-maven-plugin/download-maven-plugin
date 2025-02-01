@@ -1,6 +1,8 @@
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.download-maven-plugin/download-maven-plugin?color=31c653&label=maven%20central)](https://central.sonatype.com/artifact/io.github.download-maven-plugin/download-maven-plugin)
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=STCX76K8KUT84&no_recurring=0&item_name=Support+download-maven-plugin+project&currency_code=USD)
 
+[![Donate](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://stand-with-ukraine.pp.ua/)
+
 # Download Plugin for Maven
 This is a plugin meant to help maven user to download different files on different protocol in part of maven build.
 The plugin caches downloaded files in maven cache directory, which saves network traffic and speedup build.
