@@ -42,6 +42,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -552,6 +553,8 @@ public class WGetMojoTest {
                         is("Hello, world!"));
                 fail("Execution failed with " + key + " test: accepted an incorrect signature");
             } catch (MojoExecutionException | MojoFailureException | IOException ex) {
+                System.err.println(ex.getMessage());
+                ex.printStackTrace();
                 final Throwable rootCause = getRootCause(ex);
                 if (rootCause.getMessage() == null || !rootCause.getMessage().contains("Not same digest as expected")) {
                     fail("Execution failed with " + key + " test: " + rootCause + " stack trace:\n"
@@ -688,6 +691,29 @@ public class WGetMojoTest {
                 setVariableValueToObject(m, "skipCache", true);
                 setVariableValueToObject(m, "failOnError", true);
                 setVariableValueToObject(m, "retries", 3);
+            }).execute();
+            fail("The mojo should have failed upon error");
+        } catch (Exception e) {
+            assertThat(e, is(instanceOf(MojoExecutionException.class)));
+            verify(3, getRequestedFor(anyUrl()));
+        }
+    }
+
+    /**
+     * Plugin execution should fail only after all retries have been exhausted
+     * if a custom configured code was returned by the resource being downloaded.
+     * It should repeat the query exactly 3 times.
+     */
+    @Test
+    public void testRetriedAfterDownloadFailsWithCode404() {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(notFound()));
+        try {
+            createMojo(m -> {
+                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
+                setVariableValueToObject(m, "skipCache", true);
+                setVariableValueToObject(m, "failOnError", true);
+                setVariableValueToObject(m, "retries", 3);
+                setVariableValueToObject(m, "retriesOnHttpCodes", "404,500");
             }).execute();
             fail("The mojo should have failed upon error");
         } catch (Exception e) {

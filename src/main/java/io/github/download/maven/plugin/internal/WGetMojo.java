@@ -17,10 +17,16 @@ package io.github.download.maven.plugin.internal;
 
 import io.github.download.maven.plugin.internal.cache.DownloadCache;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
+import io.github.resilience4j.core.IntervalFunction;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -194,6 +200,37 @@ public final class WGetMojo extends AbstractMojo {
      */
     @Parameter(property = "download.retries", defaultValue = "2")
     private int retries;
+
+    /**
+     * Comma separated list of HTTP codes that will be retried.
+     */
+    @Parameter(property = "download.retries.httpCodes")
+    private String retriesOnHttpCodes;
+
+    /**
+     * Configures a list of error classes that are recorded as a failure and thus are retried. Any exception matching
+     * or inheriting from one of the list will be retried.
+     */
+    @Parameter(property = "download.retries.exceptions")
+    private List<String> retriesOnExceptions;
+
+    /**
+     * Initial retries interval in milliseconds.
+     */
+    @Parameter(property = "download.retries.interval.initial", defaultValue = "500")
+    private long retriesIntervalInitial;
+
+    /**
+     * Each subsequent retry interval will be multiplied by this value.
+     */
+    @Parameter(property = "download.retries.interval.multiplier", defaultValue = "1.5")
+    private double retriesIntervalMultiplier;
+
+    /**
+     * Maximum value of interval between retries in milliseconds.
+     */
+    @Parameter(property = "download.retries.interval.max", defaultValue = "30000")
+    private long retriesIntervalMax;
 
     /**
      * Read timeout for a download in milliseconds.
@@ -552,38 +589,70 @@ public final class WGetMojo extends AbstractMojo {
                             this.getLog().warn("Ignoring download failure.");
                         }
                     }
-                    boolean done = false;
-                    for (int retriesLeft = this.retries; !done && retriesLeft > 0; --retriesLeft) {
-                        try {
-                            this.doGet(outputFile);
-                            checksums.validate(outputFile);
-                            done = true;
-                        } catch (final DownloadFailureException ex) {
-                            // treating HTTP codes >= 500 as transient and thus always retriable
-                            if (this.failOnError && ex.getHttpCode() < HttpCodes.INTERNAL_SERVER_ERROR.getCode()) {
-                                throw new MojoExecutionException(ex.getMessage(), ex);
+                    final List<Integer> retriedHttpCodes = this.retriesOnHttpCodes != null ? Arrays.stream(
+                        this.retriesOnHttpCodes.split(",")).map(
+                        Integer::valueOf).collect(Collectors.toList()) : null;
+                    final RetryConfig.Builder<?> config = RetryConfig.custom()
+                        .maxAttempts(this.retries)
+                        .failAfterMaxAttempts(true)
+                        .retryOnException(ex -> {
+                            if (ex instanceof DownloadFailureException) {
+                                if (retriedHttpCodes != null) {
+                                    return retriedHttpCodes.contains(((DownloadFailureException) ex).getHttpCode());
+                                } else {
+                                    return ((DownloadFailureException) ex).getHttpCode()
+                                        >= HttpCodes.INTERNAL_SERVER_ERROR.getCode();
+                                }
                             } else {
-                                this.getLog().warn(ex.getMessage());
+                                return false;
                             }
-                        } catch (final IOException ex) {
-                            if (this.failOnError) {
-                                throw new MojoExecutionException(ex.getMessage(), ex);
-                            } else {
-                                this.getLog().warn(ex.getMessage());
+                        });
+                    try {
+                        if (this.retriesOnExceptions != null) {
+                            final Class<? extends Throwable>[] exceptions = new Class[this.retriesOnExceptions.size()];
+                            for (int id = 0; id < this.retriesOnExceptions.size(); id = id + 1) {
+                                exceptions[id] = (Class<? extends Throwable>) Class.forName(
+                                    this.retriesOnExceptions.get(id));
                             }
+                            config.retryExceptions(exceptions);
                         }
-                        if (!done) {
-                            this.getLog().warn(String.format("Retrying (%d more)", retriesLeft - 1));
-                        }
+                    } catch (final ClassNotFoundException ex) {
+                        throw new MojoExecutionException(ex.getMessage(), ex);
                     }
-                    if (!done) {
+                    if (this.retriesIntervalInitial == 0) {
+                        config.intervalFunction(integer -> 0L);
+                    } else {
+                        config.intervalFunction(
+                            IntervalFunction.ofExponentialRandomBackoff(
+                                Duration.ofMillis(this.retriesIntervalInitial), this.retriesIntervalMultiplier,
+                                IntervalFunction.DEFAULT_RANDOMIZATION_FACTOR,
+                                Duration.ofMillis(this.retriesIntervalMax)
+                            ));
+                    }
+                    final RetryRegistry registry = RetryRegistry.of(config.build());
+                    final Retry retry = registry.retry("WGet");
+                    retry.getEventPublisher().onRetry(
+                        event -> {
+                            getLog().info(
+                                String.format("Retrying (%d more)", this.retries - event.getNumberOfRetryAttempts()
+                                ));
+                            if (event.getLastThrowable() != null) {
+                                getLog().warn(event.getLastThrowable().getMessage());
+                            }
+                        });
+                    try {
+                        retry.executeCheckedSupplier(() -> {
+                            WGetMojo.this.doGet(outputFile);
+                            checksums.validate(outputFile);
+                            return null;
+                        });
+                    } catch (final MojoFailureException | MojoExecutionException ex) {
+                        throw ex;
+                    } catch (final Throwable ex) {
                         if (this.failOnError) {
-                            throw new MojoFailureException(
-                                String.format("Could not get content after %d failed attempts.", this.retries)
-                            );
+                            throw new MojoExecutionException(ex.getMessage(), ex);
                         } else {
-                            this.getLog().warn("Ignoring download failure(s).");
-                            return;
+                            this.getLog().warn(ex.getMessage());
                         }
                     }
                 }
