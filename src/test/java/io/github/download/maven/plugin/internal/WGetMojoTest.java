@@ -553,8 +553,6 @@ public class WGetMojoTest {
                         is("Hello, world!"));
                 fail("Execution failed with " + key + " test: accepted an incorrect signature");
             } catch (MojoExecutionException | MojoFailureException | IOException ex) {
-                System.err.println(ex.getMessage());
-                ex.printStackTrace();
                 final Throwable rootCause = getRootCause(ex);
                 if (rootCause.getMessage() == null || !rootCause.getMessage().contains("Not same digest as expected")) {
                     fail("Execution failed with " + key + " test: " + rootCause + " stack trace:\n"
