@@ -589,57 +589,7 @@ public final class WGetMojo extends AbstractMojo {
                             this.getLog().warn("Ignoring download failure.");
                         }
                     }
-                    final List<Integer> retriedHttpCodes = this.retriesOnHttpCodes != null ? Arrays.stream(
-                        this.retriesOnHttpCodes.split(",")).map(
-                        Integer::valueOf).collect(Collectors.toList()) : null;
-                    final RetryConfig.Builder<?> config = RetryConfig.custom()
-                        .maxAttempts(this.retries)
-                        .failAfterMaxAttempts(true)
-                        .retryOnException(ex -> {
-                            if (ex instanceof DownloadFailureException) {
-                                if (retriedHttpCodes != null) {
-                                    return retriedHttpCodes.contains(((DownloadFailureException) ex).getHttpCode());
-                                } else {
-                                    return ((DownloadFailureException) ex).getHttpCode()
-                                        >= HttpCodes.INTERNAL_SERVER_ERROR.getCode();
-                                }
-                            } else {
-                                return false;
-                            }
-                        });
-                    try {
-                        if (this.retriesOnExceptions != null) {
-                            final Class<? extends Throwable>[] exceptions = new Class[this.retriesOnExceptions.size()];
-                            for (int id = 0; id < this.retriesOnExceptions.size(); id = id + 1) {
-                                exceptions[id] = (Class<? extends Throwable>) Class.forName(
-                                    this.retriesOnExceptions.get(id));
-                            }
-                            config.retryExceptions(exceptions);
-                        }
-                    } catch (final ClassNotFoundException ex) {
-                        throw new MojoExecutionException(ex.getMessage(), ex);
-                    }
-                    if (this.retriesIntervalInitial == 0) {
-                        config.intervalFunction(integer -> 0L);
-                    } else {
-                        config.intervalFunction(
-                            IntervalFunction.ofExponentialRandomBackoff(
-                                Duration.ofMillis(this.retriesIntervalInitial), this.retriesIntervalMultiplier,
-                                IntervalFunction.DEFAULT_RANDOMIZATION_FACTOR,
-                                Duration.ofMillis(this.retriesIntervalMax)
-                            ));
-                    }
-                    final RetryRegistry registry = RetryRegistry.of(config.build());
-                    final Retry retry = registry.retry("WGet");
-                    retry.getEventPublisher().onRetry(
-                        event -> {
-                            getLog().info(
-                                String.format("Retrying (%d more)", this.retries - event.getNumberOfRetryAttempts()
-                                ));
-                            if (event.getLastThrowable() != null) {
-                                getLog().warn(event.getLastThrowable().getMessage());
-                            }
-                        });
+                    final Retry retry = configureRetry();
                     try {
                         retry.executeCheckedSupplier(() -> {
                             WGetMojo.this.doGet(outputFile);
@@ -689,6 +639,67 @@ public final class WGetMojo extends AbstractMojo {
                 fileLock.unlock();
             }
         }
+    }
+
+    /**
+     * Creates a Retry object from give parameters.
+     * @return Configured Retry object
+     * @throws MojoExecutionException
+     */
+    @SuppressWarnings("checkstyle:ReturnCount")
+    private Retry configureRetry() throws MojoExecutionException {
+        final List<Integer> retriedHttpCodes = this.retriesOnHttpCodes != null ? Arrays.stream(
+            this.retriesOnHttpCodes.split(",")).map(
+            Integer::valueOf).collect(Collectors.toList()) : null;
+        final RetryConfig.Builder<?> config = RetryConfig.custom()
+            .maxAttempts(this.retries)
+            .failAfterMaxAttempts(true)
+            .retryOnException(ex -> {
+                if (ex instanceof DownloadFailureException) {
+                    if (retriedHttpCodes != null) {
+                        return retriedHttpCodes.contains(((DownloadFailureException) ex).getHttpCode());
+                    } else {
+                        return ((DownloadFailureException) ex).getHttpCode()
+                            >= HttpCodes.INTERNAL_SERVER_ERROR.getCode();
+                    }
+                } else {
+                    return false;
+                }
+            });
+        try {
+            if (this.retriesOnExceptions != null) {
+                final Class<? extends Throwable>[] exceptions = new Class[this.retriesOnExceptions.size()];
+                for (int id = 0; id < this.retriesOnExceptions.size(); id = id + 1) {
+                    exceptions[id] = (Class<? extends Throwable>) Class.forName(
+                        this.retriesOnExceptions.get(id));
+                }
+                config.retryExceptions(exceptions);
+            }
+        } catch (final ClassNotFoundException ex) {
+            throw new MojoExecutionException(ex.getMessage(), ex);
+        }
+        if (this.retriesIntervalInitial == 0) {
+            config.intervalFunction(integer -> 0L);
+        } else {
+            config.intervalFunction(
+                IntervalFunction.ofExponentialRandomBackoff(
+                    Duration.ofMillis(this.retriesIntervalInitial), this.retriesIntervalMultiplier,
+                    IntervalFunction.DEFAULT_RANDOMIZATION_FACTOR,
+                    Duration.ofMillis(this.retriesIntervalMax)
+                ));
+        }
+        final RetryRegistry registry = RetryRegistry.of(config.build());
+        final Retry retry = registry.retry("WGet");
+        retry.getEventPublisher().onRetry(
+            event -> {
+                getLog().info(
+                    String.format("Retrying (%d more)", this.retries - event.getNumberOfRetryAttempts()
+                    ));
+                if (event.getLastThrowable() != null) {
+                    getLog().warn(event.getLastThrowable().getMessage());
+                }
+            });
+        return retry;
     }
 
     /**
