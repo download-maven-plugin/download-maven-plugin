@@ -274,9 +274,9 @@
                                     <parallelThreads>1C</parallelThreads>
                                     <debug>true</debug>
                                     <settingsFile>${project.basedir}/src/it/settings.xml</settingsFile>
-				    <properties>
-					<testing.versionUnderTest>${project.version}</testing.versionUnderTest>
-				    </properties>
+                                    <properties>
+                                        <testing.versionUnderTest>${project.version}</testing.versionUnderTest>
+				                    </properties>
                                     <filterProperties>
                                         <mrm.repository.url>${mrm.repository.url}</mrm.repository.url>
                                     </filterProperties>
