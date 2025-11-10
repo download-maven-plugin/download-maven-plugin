@@ -430,11 +430,13 @@
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-retry</artifactId>
+            <!-- We stay on versions below 2 in order to support java 11-->
             <version>1.7.1</version>
         </dependency>
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-core</artifactId>
+            <!-- We stay on versions below 2 in order to support java 11-->
             <version>1.7.1</version>
         </dependency>
         <dependency>
