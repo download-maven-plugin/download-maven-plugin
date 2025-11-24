@@ -427,6 +427,23 @@
             <artifactId>plexus-io</artifactId>
             <version>3.5.0</version>
         </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-retry</artifactId>
+            <!-- We stay on versions below 2 in order to support java 11-->
+            <version>1.7.1</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-core</artifactId>
+            <!-- We stay on versions below 2 in order to support java 11-->
+            <version>1.7.1</version>
+        </dependency>
+        <dependency>
+	        <groupId>io.vavr</groupId>
+	        <artifactId>vavr</artifactId>
+	        <version>0.10.2</version>
+	    </dependency>
         <!-- Used for password decryption -->
         <dependency>
             <groupId>org.codehaus.plexus</groupId>
