@@ -38,6 +38,7 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.AuthCache;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.cache.HttpCacheContext;
+import org.apache.http.client.config.CookieSpecs;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.conn.routing.HttpRoutePlanner;
@@ -177,6 +178,7 @@ public final class HttpFileRequester {
                 .setConnectTimeout(this.connectTimeout)
                 .setSocketTimeout(this.socketTimeout)
                 .setRedirectsEnabled(this.redirectsEnabled)
+                .setCookieSpec(CookieSpecs.STANDARD)
                 .build());
         if (this.insecure) {
             try {
