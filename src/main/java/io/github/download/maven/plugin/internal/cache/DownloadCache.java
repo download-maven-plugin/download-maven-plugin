@@ -87,11 +87,14 @@ public final class DownloadCache {
      */
     public void install(final URI uri, final File outputFile, final Checksums checksums)
         throws MojoFailureException, IOException {
-        if (!this.basedir.exists() && !this.basedir.mkdirs()) {
+        try {
+            Files.createDirectories(this.basedir.toPath());
+        } catch (final IOException ex) {
             throw new MojoFailureException(
                 String.format(
                     "Could not create cache directory: %s", this.basedir.getAbsolutePath()
-                )
+                ),
+                ex
             );
         }
         this.index.getLock().lock();
