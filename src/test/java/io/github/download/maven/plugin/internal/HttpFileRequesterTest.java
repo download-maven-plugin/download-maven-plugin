@@ -367,6 +367,32 @@ public class HttpFileRequesterTest {
         assertThat(error.getMessage(), containsString("followRedirects is false"));
     }
 
+    /**
+     * A cookie with an RFC 1123 {@code Expires} date (as sent by GitHub) set on a redirect hop
+     * is accepted and sent with the next request.
+     * @see <a href="https://github.com/download-maven-plugin/download-maven-plugin/issues/309">#309</a>
+     */
+    @Test
+    public void testCookieWithRfc1123ExpiresIsKeptAcrossRedirect() throws Exception {
+        this.wireMock.stubFor(get(urlEqualTo("/start"))
+            .willReturn(temporaryRedirect("/file")
+                .withStatus(302)
+                .withHeader("Set-Cookie",
+                    "session=abc; Path=/; Expires=Wed, 24 Jun 2099 17:10:07 GMT; HttpOnly; SameSite=Lax")));
+        this.wireMock.stubFor(get(urlEqualTo("/file")).willReturn(forbidden()));
+        this.wireMock.stubFor(get(urlEqualTo("/file"))
+            .withCookie("session", equalTo("abc"))
+            .willReturn(ok().withBody("with cookie")));
+
+        createFileRequesterBuilder()
+            .withUri(new URI("http://localhost:" + this.wireMock.port() + "/start"))
+            .withRedirectsEnabled(true)
+            .build()
+            .download(this.outputFile, emptyList());
+
+        assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("with cookie"));
+    }
+
     private static Server server(final String id, final String username, final String password) {
         final Server server = new Server();
         server.setId(id);
