@@ -7,6 +7,7 @@ import org.apache.maven.plugin.logging.Log;
 import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -43,12 +44,40 @@ public class FilePermissionsTest {
     }
 
     @Test
+    public void failIfPermissionCannotBeApplied() {
+        // on Windows File#setExecutable reports success even for a missing file
+        assumeNotWindows();
+        final File missing = new File(this.temporaryFolder.getRoot(), "missing");
+        Assert.assertThrows(
+            MojoExecutionException.class,
+            () -> new FilePermissions("+x", Mockito.mock(Log.class)).applyTo(missing)
+        );
+    }
+
+    @Test
+    public void noPermissionsIsNoop() throws IOException, MojoExecutionException {
+        // on Windows File#canExecute is always true, so "not executable" can't be observed
+        assumeNotWindows();
+        final File outputFile = this.temporaryFolder.newFile();
+        outputFile.setExecutable(false);
+        new FilePermissions(null, Mockito.mock(Log.class)).applyTo(outputFile);
+        MatcherAssert.assertThat(outputFile.canExecute(), Matchers.is(false));
+    }
+
+    @Test
     public void failOnUnknownCommand() throws IOException {
         final File outputFile = this.temporaryFolder.newFile();
         outputFile.setExecutable(true);
         Assert.assertThrows(
             MojoExecutionException.class,
             () -> new FilePermissions("-x", Mockito.mock(Log.class)).applyTo(outputFile)
+        );
+    }
+
+    private static void assumeNotWindows() {
+        Assume.assumeFalse(
+            "POSIX permissions are not observable on Windows",
+            System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).startsWith("windows")
         );
     }
 }
