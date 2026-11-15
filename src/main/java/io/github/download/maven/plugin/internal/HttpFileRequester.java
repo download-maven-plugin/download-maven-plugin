@@ -27,6 +27,7 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Objects;
+import javax.annotation.Nullable;
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpHost;
@@ -53,13 +54,8 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.impl.conn.DefaultProxyRoutePlanner;
 import org.apache.http.impl.conn.SystemDefaultRoutePlanner;
 import org.apache.http.ssl.SSLContextBuilder;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
-import org.apache.maven.settings.Server;
 import org.apache.maven.shared.utils.StringUtils;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
 
 /**
  * File requester that can download resources over HTTP transport using Apache HttpClient 4.x.
@@ -204,19 +200,10 @@ public final class HttpFileRequester {
         private int connectTimeout = 3000;
         private int socketTimeout = 3000;
         private URI uri;
-        private String username;
-        private String password;
-        private String serverId;
-        private String proxyHost;
-        private int proxyPort;
-        private String proxyUserName;
-        private String proxyPassword;
-        private String proxyNtlmHost;
-        private String proxyNtlmDomain;
+        private UserCredentials credentials;
+        private ProxySettings proxy;
         private Log log;
         private boolean redirectsEnabled;
-        private MavenSession mavenSession;
-        private SecDispatcher secDispatcher;
         private boolean preemptiveAuth;
         private boolean insecure;
 
@@ -240,48 +227,23 @@ public final class HttpFileRequester {
             return this;
         }
 
-        public HttpFileRequester.Builder withUsername(final String username) {
-            this.username = username;
+        /**
+         * Credentials for the server hosting the resource.
+         * @param credentials Credentials, {@literal null} for anonymous access
+         * @return This builder
+         */
+        public HttpFileRequester.Builder withCredentials(@Nullable final UserCredentials credentials) {
+            this.credentials = credentials;
             return this;
         }
 
-        public HttpFileRequester.Builder withPassword(final String password) {
-            this.password = password;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withServerId(final String serverId) {
-            this.serverId = serverId;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withProxyHost(final String proxyHost) {
-            this.proxyHost = proxyHost;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withProxyPort(final int proxyPort) {
-            this.proxyPort = proxyPort;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withProxyUserName(final String proxyUserName) {
-            this.proxyUserName = proxyUserName;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withProxyPassword(final String proxyPassword) {
-            this.proxyPassword = proxyPassword;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withNtlmHost(final String proxyNtlmHost) {
-            this.proxyNtlmHost = proxyNtlmHost;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withNtlmDomain(final String proxyNtlmDomain) {
-            this.proxyNtlmDomain = proxyNtlmDomain;
+        /**
+         * Proxy to route the request through.
+         * @param proxy Proxy, {@literal null} to use the JVM default proxy selector
+         * @return This builder
+         */
+        public HttpFileRequester.Builder withProxy(@Nullable final ProxySettings proxy) {
+            this.proxy = proxy;
             return this;
         }
 
@@ -300,29 +262,12 @@ public final class HttpFileRequester {
             return this;
         }
 
-        public HttpFileRequester.Builder withMavenSession(final MavenSession mavenSession) {
-            this.mavenSession = mavenSession;
-            return this;
-        }
-
-        public HttpFileRequester.Builder withSecDispatcher(final SecDispatcher secDispatcher) {
-            this.secDispatcher = secDispatcher;
-            return this;
-        }
-
         public HttpFileRequester.Builder withInsecure(final boolean insecure) {
             this.insecure = insecure;
             return this;
         }
 
-        /**
-         * Builds an instance of {@code HttpFileRequester} using the configured properties.
-         * @return A newly constructed {@code HttpFileRequester}
-         * @throws MojoExecutionException If the server with specified ID is not found
-         *  or if any other error occurs during the build process.
-         */
-        @SuppressWarnings({"checkstyle:ExecutableStatementCount", "checkstyle:NestedIfDepth"})
-        public HttpFileRequester build() throws MojoExecutionException {
+        public HttpFileRequester build() {
             final HttpFileRequester instance = new HttpFileRequester();
             instance.uri = Objects.requireNonNull(this.uri);
             instance.progressReport = this.progressReport;
@@ -332,65 +277,31 @@ public final class HttpFileRequester {
             instance.preemptiveAuth = this.preemptiveAuth;
             instance.insecure = this.insecure;
             instance.credentialsProvider = new BasicCredentialsProvider();
-            if (StringUtils.isNotBlank(this.serverId)) {
-                Objects.requireNonNull(this.mavenSession);
-                if (this.log.isDebugEnabled()) {
+            if (this.credentials != null && StringUtils.isNotBlank(this.credentials.username())) {
+                if (this.log != null && this.log.isDebugEnabled()) {
                     this.log.debug(
-                        String.format("providing custom authentication for %s", this.serverId)
-                    );
-                }
-                final Server server = this.mavenSession.getSettings().getServer(this.serverId);
-                if (server == null) {
-                    throw new MojoExecutionException(
-                        String.format("Server %s not found", this.serverId)
-                    );
-                }
-                if (this.log.isDebugEnabled()) {
-                    this.log.debug(
-                        String.format("serverId %s supplies username: %s and password: ***",
-                            this.serverId, server.getUsername()
+                        String.format("providing authentication for user %s and password: ***",
+                            this.credentials.username()
                         )
                     );
                 }
                 instance.credentialsProvider.setCredentials(
                     new AuthScope(this.uri.getHost(), this.uri.getPort()),
-                    new UsernamePasswordCredentials(
-                        server.getUsername(), this.decrypt(server.getPassword(), this.serverId)
-                    )
-                );
-            } else if (StringUtils.isNotBlank(this.username)) {
-                if (this.log.isDebugEnabled()) {
-                    this.log.debug("providing custom authentication");
-                    this.log.debug(String.format("username: %s and password: ***", this.username));
-                }
-                instance.credentialsProvider.setCredentials(
-                    new AuthScope(this.uri.getHost(), this.uri.getPort()),
-                    new UsernamePasswordCredentials(this.username, this.password)
+                    new UsernamePasswordCredentials(this.credentials.username(), this.credentials.password())
                 );
             }
-            if (StringUtils.isNotBlank(this.proxyHost)) {
-                final HttpHost host = new HttpHost(this.proxyHost, this.proxyPort);
+            if (this.proxy != null && StringUtils.isNotBlank(this.proxy.host())) {
+                final HttpHost host = new HttpHost(this.proxy.host(), this.proxy.port());
                 instance.routePlanner = new DefaultProxyRoutePlanner(host);
-                final boolean isProxyAuth = StringUtils.isNotBlank(this.proxyUserName)
-                    && StringUtils.isNotBlank(this.proxyPassword);
-                if (isProxyAuth) {
-                    final Credentials credentials;
-                    final boolean isNtlmProxy = StringUtils.isNotBlank(this.proxyNtlmHost)
-                        && StringUtils.isNotBlank(this.proxyNtlmDomain);
-                    if (isNtlmProxy) {
-                        credentials = new NTCredentials(
-                            this.proxyUserName, this.proxyPassword,
-                            this.proxyNtlmHost, this.proxyNtlmDomain
-                        );
-                    } else {
-                        credentials = new UsernamePasswordCredentials(
-                            this.proxyUserName, this.proxyPassword
-                        );
-                    }
-                    instance.credentialsProvider.setCredentials(
-                        new AuthScope(host.getHostName(), host.getPort()), credentials
+                this.proxy.credentials()
+                    .filter(creds -> StringUtils.isNotBlank(creds.username()))
+                    .filter(creds -> StringUtils.isNotBlank(creds.password()))
+                    .ifPresent(
+                        creds -> instance.credentialsProvider.setCredentials(
+                            new AuthScope(host.getHostName(), host.getPort()),
+                            Builder.proxyCredentials(creds)
+                        )
                     );
-                }
             } else {
                 instance.routePlanner = new SystemDefaultRoutePlanner(ProxySelector.getDefault());
             }
@@ -398,23 +309,20 @@ public final class HttpFileRequester {
         }
 
         /**
-         * Decrypt given password using maven security dispatcher.
-         * @param password Encrypted password/passphrase.
-         * @param server Server ID from settings.xml the password came from.
-         * @return Decrypted password or input string if failed to decrypt.
+         * Converts proxy credentials to HTTP client credentials, NTLM if domain and workstation are set.
+         * @param creds Proxy credentials
+         * @return HTTP client credentials
          */
-        private String decrypt(final String password, final String server) {
-            String result;
-            try {
-                result = this.secDispatcher.decrypt(password);
-            } catch (final SecDispatcherException ex) {
-                this.log.warn(
-                    String.format(
-                        "Failed to decrypt password/passphrase for server %s, %s",
-                        server, "using auth token as is"
-                    ), ex
+        private static Credentials proxyCredentials(final UserCredentials creds) {
+            final Credentials result;
+            final boolean ntlm = creds.ntlmHost().filter(StringUtils::isNotBlank).isPresent()
+                && creds.ntlmDomain().filter(StringUtils::isNotBlank).isPresent();
+            if (ntlm) {
+                result = new NTCredentials(
+                    creds.username(), creds.password(), creds.ntlmHost().get(), creds.ntlmDomain().get()
                 );
-                result = password;
+            } else {
+                result = new UsernamePasswordCredentials(creds.username(), creds.password());
             }
             return result;
         }

@@ -17,6 +17,7 @@ package io.github.download.maven.plugin.internal;
 
 import io.github.download.maven.plugin.internal.cache.DownloadCache;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
+import io.github.download.maven.plugin.internal.maven.MavenEnvironment;
 import io.github.resilience4j.core.IntervalFunction;
 import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryConfig;
@@ -64,11 +65,6 @@ import org.codehaus.plexus.archiver.xz.XZUnArchiver;
 import org.codehaus.plexus.components.io.filemappers.FileMapper;
 import org.codehaus.plexus.components.io.fileselectors.FileSelector;
 import org.codehaus.plexus.components.io.fileselectors.IncludeExcludeFileSelector;
-import org.eclipse.aether.repository.Authentication;
-import org.eclipse.aether.repository.AuthenticationContext;
-import org.eclipse.aether.repository.Proxy;
-import org.eclipse.aether.repository.RemoteRepository;
-import org.eclipse.aether.transfer.TransferListener;
 import org.sonatype.plexus.build.incremental.BuildContext;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 
@@ -477,6 +473,9 @@ public final class WGetMojo extends AbstractMojo {
         ) {
             throw new MojoExecutionException("Specify either serverId or username/password, not both");
         }
+        final Environment environment = new MavenEnvironment(
+            this.session, this.securityDispatcher, this.getLog()
+        );
         if (this.session.getSettings() == null) {
             this.getLog().warn("settings is null");
         }
@@ -490,8 +489,7 @@ public final class WGetMojo extends AbstractMojo {
         final Optional<DownloadCache> cache;
         if (!this.skipCache) {
             if (this.cacheDirectory == null) {
-                this.cacheDirectory = new File(this.session.getLocalRepository()
-                    .getBasedir(), ".cache/download-maven-plugin");
+                this.cacheDirectory = new File(environment.localRepository(), ".cache/download-maven-plugin");
             } else if (this.cacheDirectory.exists() && !this.cacheDirectory.isDirectory()) {
                 throw new MojoFailureException(
                     String.format("cacheDirectory is not a directory: %s", this.cacheDirectory.getAbsolutePath())
@@ -581,7 +579,7 @@ public final class WGetMojo extends AbstractMojo {
                         Files.copy(cachedFile.get().toPath(), outputFile.toPath());
                     }
                 } else {
-                    if (this.session.getRepositorySession().isOffline()) {
+                    if (environment.isOffline()) {
                         if (this.failOnError) {
                             throw new MojoExecutionException(
                                 "No file in cache and maven is in offline mode");
@@ -589,10 +587,13 @@ public final class WGetMojo extends AbstractMojo {
                             this.getLog().warn("Ignoring download failure.");
                         }
                     }
+                    final UserCredentials credentials = this.credentials(environment);
+                    final ProxySettings proxy = environment.proxyFor(this.uri, this.serverId).orElse(null);
+                    final boolean progress = environment.showsProgress();
                     final Retry retry = configureRetry();
                     try {
                         retry.executeCheckedSupplier(() -> {
-                            WGetMojo.this.doGet(outputFile);
+                            WGetMojo.this.doGet(outputFile, credentials, proxy, progress);
                             checksums.validate(outputFile);
                             return null;
                         });
@@ -749,141 +750,52 @@ public final class WGetMojo extends AbstractMojo {
     }
 
     /**
-     * Creates a remote repository with the given server ID and URI.
-     * @param serverId The server ID to associate with the remote repository. If blank, certain default
-     *  settings will be applied based on the URI's scheme and host.
-     * @param uri The URI of the remote repository.
-     * @return A configured instance of RemoteRepository.
-     */
-    private static RemoteRepository createRemoteRepository(final String serverId, final URI uri) {
-        return new RemoteRepository.Builder(
-            StringUtils.isBlank(serverId) ? null : serverId,
-            StringUtils.isBlank(serverId) ? uri.getScheme() : null,
-            StringUtils.isBlank(serverId) ? String.format("%s://%s", uri.getScheme(), uri.getHost()) : null
-        ).build();
-    }
-
-    /**
-     * Determines whether to show transfer progress. Progress is shown if the
-     * session is interactive and the transfer listener is null or not a QuietMavenTransferListener.
-     * @param session The current Maven session.
-     * @return Whether to show transfer progress.
-     */
-    private static boolean showTransferProgress(final MavenSession session) {
-        final boolean result;
-        if (session.getSettings().isInteractiveMode()) {
-            final TransferListener transferListener = session.getRequest().getTransferListener();
-            if (transferListener == null) {
-                result = true;
-            } else {
-                result = !"QuietMavenTransferListener".equals(transferListener.getClass().getSimpleName());
-            }
-        } else {
-            result = false;
-        }
-        return result;
-    }
-
-    /**
      * Downloads a file from a remote repository and stores it to the specified output file.
      * @param outputFile The file to which the downloaded content will be saved.
+     * @param credentials Credentials for the server, may be {@literal null}.
+     * @param proxy Proxy to route the request through, may be {@literal null}.
+     * @param progress Whether to log download progress.
      * @throws IOException If an I/O error occurs during the file download.
-     * @throws MojoExecutionException If an error specific to Maven Mojo execution occurs.
      */
-    private void doGet(final File outputFile) throws IOException, MojoExecutionException {
-        final HttpFileRequester.Builder fileRequesterBuilder = new HttpFileRequester.Builder();
-        final RemoteRepository repository = createRemoteRepository(this.serverId, this.uri);
-        // set proxy if present
-        Optional.ofNullable(this.session.getRepositorySession().getProxySelector())
-            .map(selector -> selector.getProxy(repository))
-            .ifPresent(proxy -> this.addProxy(fileRequesterBuilder, repository, proxy));
-        Optional.ofNullable(this.session.getRepositorySession().getAuthenticationSelector())
-            .map(selector -> selector.getAuthentication(repository))
-            .ifPresent(auth -> this.addAuthentication(fileRequesterBuilder, repository, auth));
-        final HttpFileRequester fileRequester = fileRequesterBuilder
-            .withProgressReport(showTransferProgress(this.session)
+    private void doGet(
+        final File outputFile, final UserCredentials credentials, final ProxySettings proxy, final boolean progress
+    ) throws IOException {
+        new HttpFileRequester.Builder()
+            .withProgressReport(progress
                 ? new LoggingProgressReport(this.getLog())
                 : new SilentProgressReport(this.getLog()))
             .withConnectTimeout(this.readTimeOut)
             .withSocketTimeout(this.readTimeOut)
             .withUri(this.uri)
-            .withUsername(this.username)
-            .withPassword(this.password)
-            .withServerId(this.serverId)
+            .withCredentials(credentials)
+            .withProxy(proxy)
             .withPreemptiveAuth(this.preemptiveAuth)
-            .withMavenSession(this.session)
-            .withSecDispatcher(this.securityDispatcher)
             .withRedirectsEnabled(this.followRedirects)
             .withLog(this.getLog())
             .withInsecure(this.insecure)
-            .build();
-        fileRequester.download(outputFile, this.getAdditionalHeaders());
+            .build()
+            .download(outputFile, this.getAdditionalHeaders());
     }
 
     /**
-     * Configures the provided HttpFileRequester.Builder with proxy settings derived
-     * from the specified Proxy and RemoteRepository.
-     * @param fileRequesterBuilder The builder for HttpFileRequester to configure with proxy settings.
-     * @param repository The remote repository for which the proxy settings should be applied.
-     * @param proxy The proxy whose settings (host, port, and authentication) will be used for the configuration.
+     * Credentials for the download: explicit username/password take precedence
+     * over the ones provided by the environment.
+     * @param environment Build environment.
+     * @return Credentials or {@literal null} for anonymous access.
+     * @throws MojoExecutionException If the environment can't provide the credentials.
      */
-    private void addProxy(
-        final HttpFileRequester.Builder fileRequesterBuilder,
-        final RemoteRepository repository,
-        final Proxy proxy
-    ) {
-        fileRequesterBuilder.withProxyHost(proxy.getHost());
-        fileRequesterBuilder.withProxyPort(proxy.getPort());
-        final RemoteRepository proxyRepo = new RemoteRepository.Builder(repository)
-            .setProxy(proxy)
-            .build();
-        try (
-            AuthenticationContext ctx = AuthenticationContext.forProxy(
-                this.session.getRepositorySession(),
-                proxyRepo
-            )
-        ) {
-            if (ctx != null) {
-                fileRequesterBuilder.withProxyUserName(ctx.get(AuthenticationContext.USERNAME));
-                fileRequesterBuilder.withProxyPassword(ctx.get(AuthenticationContext.PASSWORD));
-                fileRequesterBuilder.withNtlmDomain(ctx.get(AuthenticationContext.NTLM_DOMAIN));
-                fileRequesterBuilder.withNtlmHost(ctx.get(AuthenticationContext.NTLM_WORKSTATION));
+    private UserCredentials credentials(final Environment environment) throws MojoExecutionException {
+        final UserCredentials result;
+        if (StringUtils.isNotBlank(this.username)) {
+            result = new UserCredentials(this.username, this.password);
+        } else {
+            try {
+                result = environment.credentialsFor(this.uri, this.serverId).orElse(null);
+            } catch (final EnvironmentException ex) {
+                throw new MojoExecutionException(ex.getMessage(), ex);
             }
         }
-    }
-
-    /**
-     * Configures the provided HttpFileRequester.Builder with authentication settings derived
-     * from the specified RemoteRepository and Authentication instances.
-     * @param fileRequesterBuilder The builder for HttpFileRequester to configure with authentication settings.
-     * @param repository The remote repository for which the authentication settings should be applied.
-     * @param authentication The authentication credentials to use for configuring the file requester.
-     */
-    private void addAuthentication(
-        final HttpFileRequester.Builder fileRequesterBuilder,
-        final RemoteRepository repository,
-        final Authentication authentication
-    ) {
-        final RemoteRepository authRepo = new RemoteRepository.Builder(repository)
-            .setAuthentication(authentication)
-            .build();
-        try (
-            AuthenticationContext authCtx = AuthenticationContext.forRepository(
-                this.session.getRepositorySession(),
-                authRepo
-            )
-        ) {
-            final String uname = authCtx.get(AuthenticationContext.USERNAME);
-            final String pass = authCtx.get(AuthenticationContext.PASSWORD);
-            final String ntlmDomain = authCtx.get(AuthenticationContext.NTLM_DOMAIN);
-            final String ntlmHost = authCtx.get(AuthenticationContext.NTLM_WORKSTATION);
-            this.getLog().debug("providing custom authentication");
-            this.getLog().debug(String.format("username: %s and password: ***", uname));
-            fileRequesterBuilder.withUsername(uname);
-            fileRequesterBuilder.withPassword(pass);
-            fileRequesterBuilder.withNtlmDomain(ntlmDomain);
-            fileRequesterBuilder.withNtlmHost(ntlmHost);
-        }
+        return result;
     }
 
     /**

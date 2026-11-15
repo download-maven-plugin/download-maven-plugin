@@ -560,8 +560,6 @@ public class WGetMojoExecutionTest {
      * Credentials provided by the repository session's authentication selector should be used.
      */
     @Test
-    @Ignore("Bug: credentials set by addAuthentication() are overwritten by "
-        + ".withUsername(this.username)/.withPassword(this.password) in WGetMojo#doGet")
     public void usesCredentialsFromRepositorySession() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(unauthorized().withHeader("WWW-Authenticate", "Basic")));
         this.wireMock.stubFor(get(anyUrl()).withBasicAuth("user", "secret").willReturn(ok("secured")));
