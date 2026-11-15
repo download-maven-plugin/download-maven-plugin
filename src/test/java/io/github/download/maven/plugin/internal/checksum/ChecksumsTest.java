@@ -4,7 +4,6 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.logging.Log;
 import org.junit.Before;
 import org.junit.Rule;
@@ -79,8 +78,8 @@ public class ChecksumsTest {
             DigestUtils.md5Hex(CONTENT), null, DigestUtils.sha256Hex("other"), null, this.log
         );
         assertThat(checksums.isValid(this.file), is(false));
-        final MojoFailureException error = assertThrows(
-            MojoFailureException.class, () -> checksums.validate(this.file)
+        final ChecksumMismatchException error = assertThrows(
+            ChecksumMismatchException.class, () -> checksums.validate(this.file)
         );
         assertThat(error.getMessage(), containsString(DigestUtils.sha256Hex(CONTENT)));
     }

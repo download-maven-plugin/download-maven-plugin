@@ -13,10 +13,8 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedList;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipEntry;
@@ -40,7 +38,6 @@ import org.eclipse.aether.util.repository.AuthenticationBuilder;
 import org.eclipse.aether.util.repository.DefaultProxySelector;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -297,8 +294,6 @@ public class WGetMojoExecutionTest {
     }
 
     @Test
-    @Ignore("Bug: with failOnError=false the mojo still contacts the server in offline mode and then "
-        + "fails installing the missing file into the cache (IO Error: NoSuchFileException)")
     public void offlineWithoutCachedFileOnlyWarnsIfFailOnErrorIsFalse() throws Exception {
         this.repositorySession.setOffline(true);
         createMojo(m -> set(m, "failOnError", false)).execute();
@@ -312,8 +307,6 @@ public class WGetMojoExecutionTest {
      * {@code WGetMojoTest#testIgnoreDownloadFailure} only covers {@code skipCache=true}.
      */
     @Test
-    @Ignore("Bug: a failed download is still installed into the cache, which throws "
-        + "NoSuchFileException and fails the build despite failOnError=false")
     public void ignoredDownloadFailureWithCacheEnabled() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(serverError()));
         createMojo(m -> set(m, "failOnError", false)).execute();
@@ -667,10 +660,8 @@ public class WGetMojoExecutionTest {
     /**
      * Holds the plugin's in-process lock for the given file from another thread.
      */
-    @SuppressWarnings("unchecked")
     private void holdLockOn(final Path file) throws Exception {
-        final Map<String, Lock> locks = (Map<String, Lock>) staticField("FILE_LOCKS");
-        final Lock lock = locks.computeIfAbsent(file.toFile().getAbsolutePath(), ignored -> new ReentrantLock());
+        final Lock lock = ((FileLocks) staticField("FILE_LOCKS")).forFile(file.toFile());
         final CountDownLatch locked = new CountDownLatch(1);
         this.lockHolder = new Thread(() -> {
             lock.lock();

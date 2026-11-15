@@ -311,4 +311,24 @@ public class HttpFileRequesterTest {
 
         assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("with cookie"));
     }
+
+    /**
+     * Gzip-encoded responses are requested and stored decompressed.
+     */
+    @Test
+    public void testGzipResponseIsDecompressed() throws Exception {
+        final java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.GZIPOutputStream gzip = new java.util.zip.GZIPOutputStream(bytes)) {
+            gzip.write("Hello, gzip!".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        this.wireMock.stubFor(get(anyUrl())
+                .withHeader("Accept-Encoding", containing("gzip"))
+                .willReturn(ok().withHeader("Content-Encoding", "gzip").withBody(bytes.toByteArray())));
+
+        createFileRequesterBuilder()
+                .build()
+                .download(this.outputFile, emptyList());
+
+        assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("Hello, gzip!"));
+    }
 }

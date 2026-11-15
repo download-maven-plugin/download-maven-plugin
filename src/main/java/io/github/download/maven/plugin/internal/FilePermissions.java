@@ -16,7 +16,6 @@
 package io.github.download.maven.plugin.internal;
 
 import java.io.File;
-import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
 
 /**
@@ -52,14 +51,14 @@ public final class FilePermissions {
     /**
      * Apply permission operation(s) to the file.
      * @param file File to apply permission change operations.
-     * @throws MojoExecutionException If failed to apply the operation.
+     * @throws DownloadException If failed to apply the operation.
      */
-    public void applyTo(final File file) throws MojoExecutionException {
+    public void applyTo(final File file) throws DownloadException {
         if (this.operations != null) {
             if (this.operations.contains(SET_EXECUTABLE)) {
                 this.setExecutable(file);
             } else {
-                throw new MojoExecutionException("Invalid outputFilePermissions: " + this.operations);
+                throw new DownloadException("Invalid outputFilePermissions: " + this.operations);
             }
         }
     }
@@ -67,15 +66,15 @@ public final class FilePermissions {
     /**
      * Grant executable permissions to the file.
      * @param file File to apply permission change.
-     * @throws MojoExecutionException If failed to apply the operation.
+     * @throws DownloadException If failed to apply the operation.
      */
-    private void setExecutable(final File file) throws MojoExecutionException {
+    private void setExecutable(final File file) throws DownloadException {
         if (file.setExecutable(true)) {
             this.log.debug(
                 String.format("Applied (%s) permission to file %s", this.operations, file.getAbsolutePath())
             );
         } else {
-            throw new MojoExecutionException(
+            throw new DownloadException(
                 String.format("Failed to apply (%s) to file %s", this.operations, file.getAbsolutePath())
             );
         }
