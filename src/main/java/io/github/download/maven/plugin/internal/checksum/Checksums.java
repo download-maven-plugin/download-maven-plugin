@@ -20,11 +20,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.EnumMap;
 import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.commons.codec.binary.Hex;
-import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.logging.Log;
 
 /**
@@ -76,7 +76,7 @@ public final class Checksums {
         boolean valid = true;
         try {
             this.validate(file);
-        } catch (final Exception ex) {
+        } catch (final ChecksumMismatchException | IOException ex) {
             valid = false;
         }
         return valid;
@@ -85,14 +85,25 @@ public final class Checksums {
     /**
      * Validates the file with supplied checksums.
      * @param file File to validate.
-     * @throws Exception If the file didn't match any supplied checksum.
+     * @throws ChecksumMismatchException If the file didn't match any supplied checksum.
+     * @throws IOException If the file can't be read.
      */
-    public void validate(final File file) throws Exception {
+    public void validate(final File file) throws ChecksumMismatchException, IOException {
         for (final Map.Entry<Checksum, String> entry : this.supplied.entrySet()) {
-            Checksums.verifyChecksum(
-                file, entry.getValue(),
-                MessageDigest.getInstance(entry.getKey().algo())
-            );
+            Checksums.verifyChecksum(file, entry.getValue(), Checksums.digest(entry.getKey()));
+        }
+    }
+
+    /**
+     * Creates a message digest for the checksum type.
+     * @param checksum Checksum type.
+     * @return Message digest.
+     */
+    private static MessageDigest digest(final Checksum checksum) {
+        try {
+            return MessageDigest.getInstance(checksum.algo());
+        } catch (final NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(String.format("JVM doesn't support %s", checksum.algo()), ex);
         }
     }
 
@@ -134,14 +145,14 @@ public final class Checksums {
      * @param expectedDigest The expected checksum as a hexadecimal string.
      * @param digest An instance of MessageDigest to compute the file's checksum.
      * @throws IOException If an I/O error occurs while reading the file.
-     * @throws MojoFailureException If the computed checksum does not match the expected checksum.
+     * @throws ChecksumMismatchException If the computed checksum does not match the expected checksum.
      */
     private static void verifyChecksum(
         final File file, final String expectedDigest, final MessageDigest digest
-    ) throws IOException, MojoFailureException {
+    ) throws IOException, ChecksumMismatchException {
         final String actualDigestHex = Checksums.computeChecksumAsString(file, digest);
         if (!actualDigestHex.equals(expectedDigest)) {
-            throw new MojoFailureException(
+            throw new ChecksumMismatchException(
                 String.format(
                     "Not same digest as expected: expected <%s> was <%s>",
                     expectedDigest, actualDigestHex

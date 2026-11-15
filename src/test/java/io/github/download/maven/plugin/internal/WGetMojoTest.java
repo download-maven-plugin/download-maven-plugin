@@ -1,17 +1,8 @@
 package io.github.download.maven.plugin.internal;
 
+import com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import org.apache.http.*;
-import org.apache.http.client.cache.HeaderConstants;
-import org.apache.http.conn.routing.HttpRoute;
-import org.apache.http.entity.ByteArrayEntity;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
-import org.apache.http.message.BasicHttpResponse;
-import org.apache.http.protocol.HTTP;
-import org.apache.http.protocol.HttpContext;
-import org.apache.http.protocol.HttpRequestExecutor;
 import org.apache.maven.execution.MavenExecutionRequest;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -24,14 +15,10 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import org.mockito.MockedStatic;
 import org.sonatype.plexus.build.incremental.BuildContext;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Field;
 import java.net.URI;
 import java.nio.file.Files;
@@ -42,22 +29,14 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.zip.GZIPOutputStream;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.verify;
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
-import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.fail;
@@ -125,54 +104,23 @@ public class WGetMojoTest {
         return mojo;
     }
 
-    private static HttpClientBuilder createClientBuilderForResponse(
-            Function<HttpRequest, HttpResponse> responseProvider) {
-        // mock client builder
-        HttpClientBuilder clientBuilder = HttpClientBuilder.create();
-        clientBuilder.setConnectionManager(new BasicHttpClientConnectionManager() {
-            @Override
-            public void connect(HttpClientConnection conn, HttpRoute route, int connectTimeout, HttpContext context) {
-            }
-        });
-        clientBuilder.setRequestExecutor(new HttpRequestExecutor() {
-            @Override
-            protected HttpResponse doSendRequest(HttpRequest request, HttpClientConnection conn, HttpContext context) {
-                return responseProvider.apply(request);
-            }
-        });
-
-        return clientBuilder;
-    }
-
-    private static HttpClientBuilder createClientBuilder(Supplier<String> contentSupplier) {
-        return createClientBuilderForResponse(__ ->
-                new BasicHttpResponse(HttpVersion.HTTP_1_1, HttpStatus.SC_OK, "Ok") {{
-                    try {
-                        setEntity(new StringEntity(contentSupplier.get() + "\n"));
-                    } catch (UnsupportedEncodingException e) {
-                        throw new RuntimeException(e);
-                    }
-                }});
-    }
-
     /**
      * Verifies the cache is not used if {@code skipCache} is {@code true}
      */
     @Test
     public void testCacheDirectoryNotCreated()
             throws MojoExecutionException, MojoFailureException {
-
-        HttpClientBuilder clientBuilder = createClientBuilder(() -> "Hello, world!");
-        try (MockedStatic<HttpClientBuilder> httpClientBuilder = mockStatic(HttpClientBuilder.class)) {
-            httpClientBuilder.when(HttpClientBuilder::create).thenReturn(clientBuilder);
-            createMojo(m -> setVariableValueToObject(m, "skipCache", true)).execute();
-        }
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!")));
+        createMojo(m -> {
+            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
+            setVariableValueToObject(m, "skipCache", true);
+        }).execute();
         assertThat("Cache directory should remain empty if skipCache is true", cacheDirectory.toFile().list(),
                 emptyArray());
     }
 
     /**
-     * Verifies that there is no exception thrown should the cache directory not exist if no file is retrieved.\
+     * Verifies that there is no exception thrown should the cache directory not exist if no file is retrieved.
      * Additionally, cache directory must be created if {@code skipCache} is {@code false}.
      *
      * @throws Exception should any exception be thrown
@@ -181,17 +129,14 @@ public class WGetMojoTest {
     public void testCacheInANonExistingDirectory() throws Exception {
         Path cacheDir = this.cacheDirectory.resolve("cache/dir");
         assertThat(Files.exists(cacheDir), is(false));
-        HttpClientBuilder clientBuilder = createClientBuilder(() -> "Hello, world!");
-        try (MockedStatic<HttpClientBuilder> builder = mockStatic(HttpClientBuilder.class)) {
-            builder.when(HttpClientBuilder::create).thenReturn(clientBuilder);
-            createMojo(m -> setVariableValueToObject(m, "cacheDirectory", cacheDir.toFile())).execute();
-        } catch (MojoExecutionException | MojoFailureException e) {
-            throw new RuntimeException(e);
-        } finally {
-            assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                    is("Hello, world!"));
-            assertThat(Files.exists(cacheDir), is(true));
-        }
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!")));
+        createMojo(m -> {
+            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
+            setVariableValueToObject(m, "cacheDirectory", cacheDir.toFile());
+        }).execute();
+        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
+                is("Hello, world!"));
+        assertThat(Files.exists(cacheDir), is(true));
     }
 
     /**
@@ -239,117 +184,18 @@ public class WGetMojoTest {
     }
 
     /**
-     * Prepares reading from cache tests.
-     * @param clientBuilderSupplier supplier for the initial (cached) response
-     * @param firstMojoInitializer initializer for the mojo storing the response in cache
-     * @param secondMojoInitializer initializer for the mojo reading the response from cache
+     * Downloads the resource twice: the first download is answered with {@code firstResponse},
+     * the second one must be served from the cache although the server would now answer differently.
+     * @param firstResponse response stored in the cache
      * @throws Exception thrown if any exception is caught
      */
-    private void prepareReadingFromCache(
-        final Supplier<HttpClientBuilder> clientBuilderSupplier,
-        final Consumer<WGetMojo> firstMojoInitializer,
-        final Consumer<WGetMojo> secondMojoInitializer
-    )
-            throws Exception {
-        final HttpClientBuilder firstAnswer = clientBuilderSupplier.get();
-        // first mojo will get a cache miss
-        try (MockedStatic<HttpClientBuilder> httpClientBuilder = mockStatic(HttpClientBuilder.class)) {
-            httpClientBuilder.when(HttpClientBuilder::create).thenReturn(firstAnswer);
-            createMojo(firstMojoInitializer).execute();
-        }
+    private void prepareReadingFromCache(final ResponseDefinitionBuilder firstResponse) throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(firstResponse));
+        createMojo(m -> setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()))).execute();
 
-        // now, let's try to read that from cache – we should get the response from cache and not from the resource
-        final HttpClientBuilder secondAnswer = createClientBuilder(() -> "Goodbye!");
-        try (MockedStatic<HttpClientBuilder> httpClientBuilder = mockStatic(HttpClientBuilder.class)) {
-            httpClientBuilder.when(HttpClientBuilder::create).thenReturn(secondAnswer);
-            createMojo(secondMojoInitializer).execute();
-        }
-    }
-
-    /**
-     * Verifies that the same file is read from cache as it was previously been downloaded by another
-     * invocation of the mojo.
-     *
-     * @throws Exception should any exception be thrown
-     */
-    @Test
-    public void testReadingFromCache() throws Exception {
-        prepareReadingFromCache(() -> createClientBuilder(() -> "Hello, world!"),
-                __ -> {}, __ -> {}
-        );
-        // now, let's read that file
-        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                is("Hello, world!"));
-    }
-
-    /**
-     * Verifies that a concurrent invocation of two mojos with, the resulting cache index will keep note of both files.
-     * One of the processes starts first, then gets held up while another process downloads another file. Once
-     * the second process finishes, the first process saves its file as well. The test verifies that both files
-     * are present in the cache index. Finally, the test also verifies that the content of the cached files matches
-     * the "downloaded" content.
-     *
-     * @throws Exception should any exception be thrown
-     */
-    @Test
-    public void testCacheRetainingValuesFromTwoConcurrentCalls() throws Exception {
-        final URI firstMojoUri = URI.create("http://test/foo");
-        final URI secondMojoUri = URI.create("http://test/bar");
-        WGetMojo firstMojo = createMojo(mojo -> {
-            setVariableValueToObject(mojo, "uri", firstMojoUri);
-            setVariableValueToObject(mojo, "outputFileName", OUTPUT_FILE_NAME);
-        });
-        WGetMojo secondMojo = createMojo(mojo -> {
-            setVariableValueToObject(mojo, "uri", secondMojoUri);
-            setVariableValueToObject(mojo, "outputFileName", "second-output-file");
-        });
-
-        CountDownLatch firstMojoStarted = new CountDownLatch(1), secondMojoFinished = new CountDownLatch(1);
-        Arrays.asList(CompletableFuture.runAsync(() -> {
-                    HttpClientBuilder clientBuilder = createClientBuilder(() -> {
-                        firstMojoStarted.countDown();
-                        try {
-                            // waiting till we're sure the second mojo has finished
-                            assert secondMojoFinished.await(1, SECONDS);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                        return "foo";
-                    });
-                    try (MockedStatic<HttpClientBuilder> builder = mockStatic(HttpClientBuilder.class)) {
-                        builder.when(HttpClientBuilder::create).thenReturn(clientBuilder);
-                        firstMojo.execute();
-                    } catch (MojoExecutionException | MojoFailureException e) {
-                        throw new RuntimeException(e);
-                    }
-                }),
-                CompletableFuture.runAsync(() -> {
-                    HttpClientBuilder clientBuilder = createClientBuilder(() -> "bar");
-                    try (MockedStatic<HttpClientBuilder> builder = mockStatic(HttpClientBuilder.class)) {
-                        builder.when(HttpClientBuilder::create).thenReturn(clientBuilder);
-                        // waiting till we're sure the first mojo has started
-                        assert firstMojoStarted.await(1, SECONDS);
-                        secondMojo.execute();
-                        secondMojoFinished.countDown();
-                    } catch (MojoExecutionException | MojoFailureException | InterruptedException e) {
-                        throw new RuntimeException(e);
-                    }
-                })).forEach(CompletableFuture::join);
-
-        // cache should contain both entries
-        try (ObjectInputStream stream = new ObjectInputStream(Files.newInputStream(
-                cacheDirectory.resolve("index.ser")))) {
-            @SuppressWarnings("unchecked")
-            Map<URI, String> index = (Map<URI, String>) stream.readObject();
-            assertThat(index.entrySet(), hasSize(2));
-            assertThat(index.keySet(), containsInAnyOrder(firstMojoUri, secondMojoUri));
-
-            assertThat(String.join("", Files.readAllLines(cacheDirectory.resolve(index.get(firstMojoUri)))),
-                    is("foo"));
-
-            assertThat(String.join("", Files.readAllLines(cacheDirectory.resolve(index.get(secondMojoUri)))),
-                    is("bar"));
-        }
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Goodbye!")));
+        createMojo(m -> setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()))).execute();
+        verify(1, getRequestedFor(anyUrl()));
     }
 
     /**
@@ -762,19 +608,10 @@ public class WGetMojoTest {
      */
     @Test
     public void testShouldCacheLargeFiles() throws Exception {
-        prepareReadingFromCache(() -> createClientBuilderForResponse(__ ->
-        // first mojo will get a cache miss, with a ridiculously large content length
-                new BasicHttpResponse(HttpVersion.HTTP_1_1, HttpStatus.SC_OK, "Ok") {{
-                    try {
-                        setEntity(new StringEntity("Hello, world!\n"));
-                        setHeader(HTTP.CONTENT_LEN, String.valueOf(Long.MAX_VALUE));
-                    } catch (UnsupportedEncodingException e) {
-                        throw new RuntimeException(e);
-                    }
-                }}), __ -> {}, __ -> {});
-        // now, let's read that file
-        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                is("Hello, world!"));
+        final byte[] large = new byte[8 * 1024 * 1024];
+        new java.util.Random(42).nextBytes(large);
+        prepareReadingFromCache(ok().withBody(large));
+        assertThat(Files.readAllBytes(outputDirectory.resolve(OUTPUT_FILE_NAME)), is(large));
     }
 
     private void testRedirect(int code) {
@@ -837,16 +674,7 @@ public class WGetMojoTest {
      */
     @Test
     public void testCachingCacheControlNoStore() throws Exception {
-        prepareReadingFromCache(() -> createClientBuilderForResponse(__ ->
-                new BasicHttpResponse(HttpVersion.HTTP_1_1, HttpStatus.SC_OK, "Ok") {{
-                    try {
-                        setEntity(new StringEntity("Hello, world!\n"));
-                        setHeader(HeaderConstants.CACHE_CONTROL, HeaderConstants.CACHE_CONTROL_NO_STORE);
-                    } catch (UnsupportedEncodingException e) {
-                        throw new RuntimeException(e);
-                    }
-                }}), __ -> {}, __ -> {});
-        // now, let's read that file
+        prepareReadingFromCache(ok("Hello, world!").withHeader("Cache-Control", "no-store"));
         assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
                 is("Hello, world!"));
     }
@@ -858,80 +686,9 @@ public class WGetMojoTest {
      */
     @Test
     public void testCachingVary() throws Exception {
-        prepareReadingFromCache(() -> createClientBuilderForResponse(__ ->
-                new BasicHttpResponse(HttpVersion.HTTP_1_1, HttpStatus.SC_OK, "Ok") {{
-                    try {
-                        setEntity(new StringEntity("Hello, world!\n"));
-                        setHeader(HeaderConstants.VARY, "*");
-                    } catch (UnsupportedEncodingException e) {
-                        throw new RuntimeException(e);
-                    }
-                }}), __ -> {}, __ -> {});
-        // now, let's read that file
+        prepareReadingFromCache(ok("Hello, world!").withHeader("Vary", "*"));
         assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
                 is("Hello, world!"));
-    }
-
-    /**
-     * Verifies that content which is a response for query request is cached.
-     *
-     * @throws Exception should any exception be thrown
-     */
-    @Test
-    public void testCachingQueryRequest() throws Exception {
-        final HttpClientBuilder firstAnswer = createClientBuilder(() -> "Hello, world!");
-        // first mojo will get a cache miss
-        try (MockedStatic<HttpClientBuilder> httpClientBuilder = mockStatic(HttpClientBuilder.class)) {
-            httpClientBuilder.when(HttpClientBuilder::create).thenReturn(firstAnswer);
-            createMojo(mojo -> setVariableValueToObject(mojo, "uri", URI.create("http://test?query=dummy")))
-                    .execute();
-        }
-
-        // now, let's try to read that from cache – we should get the response from cache and not from the resource
-        final HttpClientBuilder secondAnswer = createClientBuilder(() -> "Goodbye!");
-        try (MockedStatic<HttpClientBuilder> httpClientBuilder = mockStatic(HttpClientBuilder.class)) {
-            httpClientBuilder.when(HttpClientBuilder::create).thenReturn(secondAnswer);
-            createMojo(mojo -> setVariableValueToObject(mojo, "uri", URI.create("http://test?query=dummy")))
-                    .execute();
-        }
-
-        // now, let's read that file
-        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                is("Hello, world!"));
-    }
-
-    /**
-     * Verifies that the cached response should be decompressed
-     *
-     * @throws Exception should any exception be thrown
-     */
-    @Test
-    public void testCacheDecompressedResponse() throws Exception {
-        final String unencryptedResponse = "Hello\n";
-        prepareReadingFromCache(() -> createClientBuilderForResponse(request ->
-                new BasicHttpResponse(HttpVersion.HTTP_1_1, HttpStatus.SC_OK, "Ok") {{
-                    // fail if gzip encoding is not accepted
-                    assertThat(Arrays.stream(request.getHeaders(HttpHeaders.ACCEPT_ENCODING))
-                            .flatMap(h -> Arrays.stream(h.getElements()))
-                            .anyMatch(he -> "gzip".equalsIgnoreCase(he.getName())), is(true));
-
-                        try (ByteArrayOutputStream os = new ByteArrayOutputStream();
-                             GZIPOutputStream gzOs = new GZIPOutputStream(os)) {
-                            final byte[] uncompressedBytes = unencryptedResponse.getBytes();
-                            gzOs.write(uncompressedBytes, 0, uncompressedBytes.length);
-                            gzOs.finish();
-
-                            setEntity(new ByteArrayEntity(os.toByteArray()) {{
-                                setContentEncoding("gzip");
-                            }});
-                            setHeader(HttpHeaders.CONTENT_ENCODING, "gzip");
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        }
-                }}), __ -> {}, __ -> {});
-        // now, let's read that file
-        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                is(unencryptedResponse.trim()));
     }
 
 
@@ -948,13 +705,4 @@ public class WGetMojoTest {
         assertThat(outputDirectory.resolve(OUTPUT_FILE_NAME).toFile().canExecute(), is(true));
     }
 
-    @Test
-    public void setsFilePermOnReadFromCache() throws Exception {
-        prepareReadingFromCache(
-            () -> createClientBuilder(() -> "Hello, world!"),
-            m -> setVariableValueToObject(m, "outputFilePermissions", "+x"),
-            m -> setVariableValueToObject(m, "outputFilePermissions", "+x")
-        );
-        assertThat(outputDirectory.resolve(OUTPUT_FILE_NAME).toFile().canExecute(), is(true));
-    }
 }

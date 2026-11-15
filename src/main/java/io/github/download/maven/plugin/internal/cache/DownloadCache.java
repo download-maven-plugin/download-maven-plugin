@@ -23,7 +23,6 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.logging.Log;
 
 /**
@@ -82,15 +81,14 @@ public final class DownloadCache {
      * @param uri The URI of the file to be installed.
      * @param outputFile The file to be installed into the cache.
      * @param checksums The checksums used to verify the integrity of the file.
-     * @throws MojoFailureException If the cache directory cannot be created.
-     * @throws IOException If an I/O error occurs while copying the file.
+     * @throws IOException If the cache directory cannot be created or the file can't be copied.
      */
     public void install(final URI uri, final File outputFile, final Checksums checksums)
-        throws MojoFailureException, IOException {
+        throws IOException {
         try {
             Files.createDirectories(this.basedir.toPath());
         } catch (final IOException ex) {
-            throw new MojoFailureException(
+            throw new IOException(
                 String.format(
                     "Could not create cache directory: %s", this.basedir.getAbsolutePath()
                 ),

@@ -6,7 +6,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.maven.plugin.MojoFailureException;
+import java.io.IOException;
 import org.apache.maven.plugin.logging.Log;
 import org.junit.Before;
 import org.junit.Rule;
@@ -65,8 +65,8 @@ public class DownloadCacheTest {
     public void installFailsIfCacheDirectoryCannotBeCreated() throws Exception {
         final File blocker = this.temporaryFolder.newFile("blocker");
         final DownloadCache cache = new DownloadCache(new File(blocker, "cache"), this.log);
-        final MojoFailureException error = assertThrows(
-            MojoFailureException.class,
+        final IOException error = assertThrows(
+            IOException.class,
             () -> cache.install(URI_UNDER_TEST, this.source, this.noChecksums)
         );
         assertThat(error.getMessage(), containsString("Could not create cache directory"));

@@ -18,24 +18,18 @@ package io.github.download.maven.plugin.internal;
 import io.github.download.maven.plugin.internal.cache.DownloadCache;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
 import io.github.download.maven.plugin.internal.maven.MavenEnvironment;
-import io.github.resilience4j.core.IntervalFunction;
-import io.github.resilience4j.retry.Retry;
-import io.github.resilience4j.retry.RetryConfig;
-import io.github.resilience4j.retry.RetryRegistry;
+import io.github.download.maven.plugin.internal.maven.PlexusUnpacker;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
-import java.nio.file.Files;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import javax.inject.Inject;
 import org.apache.http.Header;
@@ -55,16 +49,8 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.shared.utils.StringUtils;
-import org.codehaus.plexus.archiver.UnArchiver;
-import org.codehaus.plexus.archiver.bzip2.BZip2UnArchiver;
-import org.codehaus.plexus.archiver.gzip.GZipUnArchiver;
 import org.codehaus.plexus.archiver.manager.ArchiverManager;
-import org.codehaus.plexus.archiver.manager.NoSuchArchiverException;
-import org.codehaus.plexus.archiver.snappy.SnappyUnArchiver;
-import org.codehaus.plexus.archiver.xz.XZUnArchiver;
 import org.codehaus.plexus.components.io.filemappers.FileMapper;
-import org.codehaus.plexus.components.io.fileselectors.FileSelector;
-import org.codehaus.plexus.components.io.fileselectors.IncludeExcludeFileSelector;
 import org.sonatype.plexus.build.incremental.BuildContext;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 
@@ -93,10 +79,10 @@ public final class WGetMojo extends AbstractMojo {
     private static final Map<String, DownloadCache> DOWNLOAD_CACHES = new ConcurrentHashMap<>();
 
     /**
-     * A map of file locks by files to be downloaded.
+     * Locks of files being downloaded, shared by all executions in this JVM.
      * Ensures exclusive access to a target file.
      */
-    private static final Map<String, Lock> FILE_LOCKS = new ConcurrentHashMap<>();
+    private static final FileLocks FILE_LOCKS = new FileLocks();
 
     /**
      * Represent the URL to fetch information from.
@@ -453,8 +439,8 @@ public final class WGetMojo extends AbstractMojo {
      */
     @SuppressWarnings(
         {
-            "checkstyle:ReturnCount", "checkstyle:JavaNCSS", "checkstyle:NPathComplexity",
-            "checkstyle:ExecutableStatementCount", "checkstyle:NestedIfDepth", "checkstyle:IllegalCatch"
+            "checkstyle:ReturnCount", "checkstyle:NPathComplexity",
+            "checkstyle:ExecutableStatementCount", "checkstyle:IllegalCatch"
         }
     )
     @Override
@@ -486,25 +472,7 @@ public final class WGetMojo extends AbstractMojo {
         if (this.retries < 1) {
             throw new MojoFailureException("retries must be at least 1");
         }
-        final Optional<DownloadCache> cache;
-        if (!this.skipCache) {
-            if (this.cacheDirectory == null) {
-                this.cacheDirectory = new File(environment.localRepository(), ".cache/download-maven-plugin");
-            } else if (this.cacheDirectory.exists() && !this.cacheDirectory.isDirectory()) {
-                throw new MojoFailureException(
-                    String.format("cacheDirectory is not a directory: %s", this.cacheDirectory.getAbsolutePath())
-                );
-            }
-            this.getLog().debug(String.format("Cache is: %s", this.cacheDirectory.getAbsolutePath()));
-            cache = Optional.of(DOWNLOAD_CACHES.computeIfAbsent(
-                this.cacheDirectory.getAbsolutePath(),
-                directory -> new DownloadCache(this.cacheDirectory, this.getLog())
-            ));
-        } else {
-            this.getLog().debug("Cache is skipped");
-            cache = Optional.empty();
-        }
-        // PREPARE
+        final DownloadCache cache = this.cache(environment);
         this.adjustOutputDirectory();
         if (this.outputDirectory.exists() && !this.outputDirectory.isDirectory()) {
             throw new MojoExecutionException(
@@ -515,287 +483,127 @@ public final class WGetMojo extends AbstractMojo {
         if (this.outputFileName == null) {
             this.outputFileName = FileNameUtils.getOutputFileName(this.uri);
         }
-        final File outputFile = new File(this.outputDirectory, this.outputFileName);
-        final Lock fileLock = FILE_LOCKS.computeIfAbsent(
-            outputFile.getAbsolutePath(), ignored -> new ReentrantLock()
+        final DownloadRequest request = new DownloadRequest.Builder()
+            .uri(this.uri)
+            .outputDirectory(this.outputDirectory)
+            .outputFileName(this.outputFileName)
+            .checksums(new Checksums(this.md5, this.sha1, this.sha256, this.sha512, this.getLog()))
+            .cache(cache)
+            .overwrite(this.overwrite)
+            .verifyExisting(this.alwaysVerifyChecksum || this.checkSignature)
+            .unpack(this.unpack)
+            .unpackWhenChanged(this.unpackWhenChanged)
+            .failOnError(this.failOnError)
+            .offline(environment.isOffline())
+            .lockWaitMillis(this.maxLockWaitTime)
+            .permissions(this.outputFilePermissions)
+            .retryPolicy(this.retryPolicy())
+            .build();
+        final Downloader downloader = new Downloader(
+            this.fetcher(environment),
+            new PlexusUnpacker(this.archiverManager, this.fileMappers, this.includes, this.excludes),
+            this.buildContext::refresh,
+            FILE_LOCKS,
+            this.getLog()
         );
-        final Checksums checksums = new Checksums(
-            this.md5, this.sha1, this.sha256, this.sha512, this.getLog()
-        );
-        // DO
-        boolean lockAcquired = false;
         try {
-            lockAcquired = fileLock.tryLock(
-                this.maxLockWaitTime, TimeUnit.MILLISECONDS
-            );
-            if (!lockAcquired) {
-                final String message = String.format(
-                    "Could not acquire lock for File: %s in %dms",
-                    outputFile, this.maxLockWaitTime
-                );
-                if (this.failOnError) {
-                    throw new MojoExecutionException(message);
-                } else {
-                    this.getLog().warn(message);
-                    return;
-                }
-            }
-            boolean haveFile = outputFile.exists();
-            if (haveFile) {
-                boolean checksumMatch = true;
-                if (this.alwaysVerifyChecksum || this.checkSignature) {
-                    try {
-                        checksums.validate(outputFile);
-                    } catch (final MojoFailureException exc) {
-                        this.getLog().warn(
-                            String.format(
-                                "The local version of file %s %s %s", outputFile.getName(),
-                                "doesn't match the expected checksum.",
-                                "You should consider checking the specified checksum is correctly set."
-                            )
-                        );
-                        checksumMatch = false;
-                    }
-                }
-                if (!checksumMatch || this.overwrite) {
-                    outputFile.delete();
-                    haveFile = false;
-                } else {
-                    this.getLog().info("File already exists, skipping");
-                }
-            }
-            Optional<File> cachedFile = Optional.empty();
-            boolean fileWasCached = false;
-            if (!haveFile) {
-                cachedFile = cache.map(c -> c.getArtifact(this.uri, checksums));
-                fileWasCached = cachedFile.map(File::exists).orElse(false);
-                if (fileWasCached) {
-                    this.getLog().debug("File was cached: " + cachedFile.get().getAbsolutePath());
-                    if (!this.unpack && !this.unpackWhenChanged) {
-                        // only copy cached file to output file
-                        // if it won't be unpacked, otherwise unpack
-                        // directly from cached file below
-                        this.getLog().debug("Copying cached file to " + outputFile.getAbsolutePath());
-                        Files.copy(cachedFile.get().toPath(), outputFile.toPath());
-                    }
-                } else {
-                    if (environment.isOffline()) {
-                        if (this.failOnError) {
-                            throw new MojoExecutionException(
-                                "No file in cache and maven is in offline mode");
-                        } else {
-                            this.getLog().warn("Ignoring download failure.");
-                        }
-                    }
-                    final UserCredentials credentials = this.credentials(environment);
-                    final ProxySettings proxy = environment.proxyFor(this.uri, this.serverId).orElse(null);
-                    final boolean progress = environment.showsProgress();
-                    final Retry retry = configureRetry();
-                    try {
-                        retry.executeCheckedSupplier(() -> {
-                            WGetMojo.this.doGet(outputFile, credentials, proxy, progress);
-                            checksums.validate(outputFile);
-                            return null;
-                        });
-                    } catch (final MojoFailureException | MojoExecutionException ex) {
-                        throw ex;
-                    } catch (final Throwable ex) {
-                        if (this.failOnError) {
-                            throw new MojoExecutionException(ex.getMessage(), ex);
-                        } else {
-                            this.getLog().warn(ex.getMessage());
-                        }
-                    }
-                }
-            }
-            if (cache.isPresent()) {
-                cache.get().install(this.uri, outputFile, checksums);
-            }
-            new FilePermissions(this.outputFilePermissions, this.getLog()).applyTo(outputFile);
-            if (this.unpack || this.unpackWhenChanged) {
-                if (!this.unpack && this.unpackWhenChanged && fileWasCached) {
-                    this.getLog().info("Skipping unpacking as the file has not changed");
-                } else {
-                    if (this.unpackWhenChanged && fileWasCached) {
-                        this.getLog().info(
-                            "Unpacking even though unchanged cache file exists because unpack = true"
-                        );
-                    }
-                    this.unpack(outputFile, cachedFile);
-                    this.buildContext.refresh(this.outputDirectory);
-                }
-            } else {
-                this.buildContext.refresh(outputFile);
-            }
-        } catch (final MojoExecutionException exc) {
-            throw exc;
+            downloader.download(request);
+        } catch (final DownloadException exc) {
+            // report the original failure as cause, as the plugin did before the download logic was extracted
+            throw new MojoExecutionException(exc.getMessage(), exc.getCause() == null ? exc : exc.getCause());
         } catch (final IOException exc) {
             throw new MojoExecutionException("IO Error: ", exc);
-        } catch (final NoSuchArchiverException exc) {
-            throw new MojoExecutionException(String.format("No such archiver: %s)", exc.getMessage()));
-        } catch (final Exception exc) {
+        } catch (final RuntimeException exc) {
             throw new MojoExecutionException("General error: ", exc);
-        } finally {
-            if (lockAcquired) {
-                fileLock.unlock();
-            }
         }
     }
 
     /**
-     * Creates a Retry object from give parameters.
-     * @return Configured Retry object
-     * @throws MojoExecutionException
-     */
-    @SuppressWarnings("checkstyle:ReturnCount")
-    private Retry configureRetry() throws MojoExecutionException {
-        final List<Integer> retriedHttpCodes = this.retriesOnHttpCodes != null ? Arrays.stream(
-            this.retriesOnHttpCodes.split(",")).map(
-            Integer::valueOf).collect(Collectors.toList()) : null;
-        final RetryConfig.Builder<?> config = RetryConfig.custom()
-            .maxAttempts(this.retries)
-            .failAfterMaxAttempts(true)
-            .retryOnException(ex -> {
-                if (ex instanceof DownloadFailureException) {
-                    if (retriedHttpCodes != null) {
-                        return retriedHttpCodes.contains(((DownloadFailureException) ex).getHttpCode());
-                    } else {
-                        return ((DownloadFailureException) ex).getHttpCode()
-                            >= HttpCodes.INTERNAL_SERVER_ERROR.getCode();
-                    }
-                } else {
-                    return false;
-                }
-            });
-        try {
-            if (this.retriesOnExceptions != null) {
-                final Class<? extends Throwable>[] exceptions = new Class[this.retriesOnExceptions.size()];
-                for (int id = 0; id < this.retriesOnExceptions.size(); id = id + 1) {
-                    exceptions[id] = (Class<? extends Throwable>) Class.forName(
-                        this.retriesOnExceptions.get(id));
-                }
-                config.retryExceptions(exceptions);
-            }
-        } catch (final ClassNotFoundException ex) {
-            throw new MojoExecutionException(ex.getMessage(), ex);
-        }
-        if (this.retriesIntervalInitial == 0) {
-            config.intervalFunction(integer -> 0L);
-        } else {
-            config.intervalFunction(
-                IntervalFunction.ofExponentialRandomBackoff(
-                    Duration.ofMillis(this.retriesIntervalInitial), this.retriesIntervalMultiplier,
-                    IntervalFunction.DEFAULT_RANDOMIZATION_FACTOR,
-                    Duration.ofMillis(this.retriesIntervalMax)
-                ));
-        }
-        final RetryRegistry registry = RetryRegistry.of(config.build());
-        final Retry retry = registry.retry("WGet");
-        retry.getEventPublisher().onRetry(
-            event -> {
-                getLog().info(
-                    String.format("Retrying (%d more)", this.retries - event.getNumberOfRetryAttempts()
-                    ));
-                if (event.getLastThrowable() != null) {
-                    getLog().warn(event.getLastThrowable().getMessage());
-                }
-            });
-        return retry;
-    }
-
-    /**
-     * Unpacks the given output file or cached file using an appropriate UnArchiver.
-     * @param outputFile The file intended to be unpacked.
-     * @param cachedFile An optional cached file that might be used instead of the output file.
-     * @throws NoSuchArchiverException If there is no suitable UnArchiver for the output file.
-     * @throws IllegalStateException If neither outputFile nor cachedFile exist for unpacking.
-     */
-    private void unpack(final File outputFile, final Optional<File> cachedFile) throws NoSuchArchiverException {
-        final UnArchiver unarchiver = this.archiverManager.getUnArchiver(outputFile);
-        if (cachedFile.isPresent() && cachedFile.get().exists()) {
-            unarchiver.setSourceFile(cachedFile.get());
-        } else if (outputFile.exists()) {
-            unarchiver.setSourceFile(outputFile);
-        } else {
-            throw new IllegalStateException("No file to unpack");
-        }
-        if (isFileUnArchiver(unarchiver)) {
-            unarchiver.setDestFile(
-                new File(
-                    this.outputDirectory, this.outputFileName.substring(0, this.outputFileName.lastIndexOf('.'))
-                )
-            );
-        } else {
-            unarchiver.setDestDirectory(this.outputDirectory);
-        }
-        unarchiver.setFileMappers(this.fileMappers);
-        this.addFileSelectorIfNeeded(unarchiver);
-        unarchiver.extract();
-        if (outputFile.exists()) {
-            outputFile.delete();
-        }
-    }
-
-    /**
-     * Determines if the provided UnArchiver instance is of a supported file format
-     * that indicates it is a file unarchiver.
-     * @param unarchiver The UnArchiver instance to check.
-     * @return True if the unarchiver is an instance of supported types; false otherwise.
-     */
-    private static boolean isFileUnArchiver(final UnArchiver unarchiver) {
-        return unarchiver instanceof BZip2UnArchiver
-            || unarchiver instanceof GZipUnArchiver
-            || unarchiver instanceof SnappyUnArchiver
-            || unarchiver instanceof XZUnArchiver;
-    }
-
-    /**
-     * Downloads a file from a remote repository and stores it to the specified output file.
-     * @param outputFile The file to which the downloaded content will be saved.
-     * @param credentials Credentials for the server, may be {@literal null}.
-     * @param proxy Proxy to route the request through, may be {@literal null}.
-     * @param progress Whether to log download progress.
-     * @throws IOException If an I/O error occurs during the file download.
-     */
-    private void doGet(
-        final File outputFile, final UserCredentials credentials, final ProxySettings proxy, final boolean progress
-    ) throws IOException {
-        new HttpFileRequester.Builder()
-            .withProgressReport(progress
-                ? new LoggingProgressReport(this.getLog())
-                : new SilentProgressReport(this.getLog()))
-            .withConnectTimeout(this.readTimeOut)
-            .withSocketTimeout(this.readTimeOut)
-            .withUri(this.uri)
-            .withCredentials(credentials)
-            .withProxy(proxy)
-            .withPreemptiveAuth(this.preemptiveAuth)
-            .withRedirectsEnabled(this.followRedirects)
-            .withLog(this.getLog())
-            .withInsecure(this.insecure)
-            .build()
-            .download(outputFile, this.getAdditionalHeaders());
-    }
-
-    /**
-     * Credentials for the download: explicit username/password take precedence
-     * over the ones provided by the environment.
+     * Download cache for this execution.
      * @param environment Build environment.
-     * @return Credentials or {@literal null} for anonymous access.
-     * @throws MojoExecutionException If the environment can't provide the credentials.
+     * @return Cache, or {@literal null} if caching is disabled.
+     * @throws MojoFailureException If the cache directory is not a directory.
      */
-    private UserCredentials credentials(final Environment environment) throws MojoExecutionException {
-        final UserCredentials result;
-        if (StringUtils.isNotBlank(this.username)) {
-            result = new UserCredentials(this.username, this.password);
+    private DownloadCache cache(final Environment environment) throws MojoFailureException {
+        final DownloadCache result;
+        if (this.skipCache) {
+            this.getLog().debug("Cache is skipped");
+            result = null;
         } else {
-            try {
-                result = environment.credentialsFor(this.uri, this.serverId).orElse(null);
-            } catch (final EnvironmentException ex) {
-                throw new MojoExecutionException(ex.getMessage(), ex);
+            if (this.cacheDirectory == null) {
+                this.cacheDirectory = new File(environment.localRepository(), ".cache/download-maven-plugin");
+            } else if (this.cacheDirectory.exists() && !this.cacheDirectory.isDirectory()) {
+                throw new MojoFailureException(
+                    String.format("cacheDirectory is not a directory: %s", this.cacheDirectory.getAbsolutePath())
+                );
             }
+            this.getLog().debug(String.format("Cache is: %s", this.cacheDirectory.getAbsolutePath()));
+            result = DOWNLOAD_CACHES.computeIfAbsent(
+                this.cacheDirectory.getAbsolutePath(),
+                directory -> new DownloadCache(this.cacheDirectory, this.getLog())
+            );
         }
         return result;
+    }
+
+    /**
+     * Retry policy from the plugin configuration.
+     * @return Retry policy.
+     * @throws MojoExecutionException If a retried exception class or HTTP code is invalid.
+     */
+    @SuppressWarnings("unchecked")
+    private RetryPolicy retryPolicy() throws MojoExecutionException {
+        final List<Integer> codes;
+        final List<Class<? extends Throwable>> exceptions = new ArrayList<>(0);
+        try {
+            if (this.retriesOnHttpCodes == null) {
+                codes = null;
+            } else {
+                codes = Arrays.stream(this.retriesOnHttpCodes.split(","))
+                    .map(String::trim)
+                    .map(Integer::valueOf)
+                    .collect(Collectors.toList());
+            }
+            if (this.retriesOnExceptions != null) {
+                for (final String name : this.retriesOnExceptions) {
+                    exceptions.add((Class<? extends Throwable>) Class.forName(name));
+                }
+            }
+        } catch (final ClassNotFoundException | NumberFormatException ex) {
+            throw new MojoExecutionException(ex.getMessage(), ex);
+        }
+        return new RetryPolicy(
+            this.retries, codes, exceptions,
+            Duration.ofMillis(this.retriesIntervalInitial), this.retriesIntervalMultiplier,
+            Duration.ofMillis(this.retriesIntervalMax)
+        );
+    }
+
+    /**
+     * HTTP fetcher configured from the plugin parameters.
+     * @param environment Build environment providing credentials, proxy and progress settings.
+     * @return Fetcher.
+     */
+    private Fetcher fetcher(final Environment environment) {
+        final UserCredentials explicit;
+        if (StringUtils.isNotBlank(this.username)) {
+            explicit = new UserCredentials(this.username, this.password);
+        } else {
+            explicit = null;
+        }
+        return new HttpFetcher(
+            environment,
+            new HttpFileRequester.Builder()
+                .withConnectTimeout(this.readTimeOut)
+                .withSocketTimeout(this.readTimeOut)
+                .withPreemptiveAuth(this.preemptiveAuth)
+                .withRedirectsEnabled(this.followRedirects)
+                .withInsecure(this.insecure),
+            explicit,
+            this.serverId,
+            this.getAdditionalHeaders(),
+            this.getLog()
+        );
     }
 
     /**
@@ -806,23 +614,5 @@ public final class WGetMojo extends AbstractMojo {
         return this.headers.entrySet().stream()
             .map(pair -> new BasicHeader(pair.getKey(), pair.getValue()))
             .collect(Collectors.toList());
-    }
-
-    /**
-     * Adds a file selector to the provided UnArchiver if the includes or excludes
-     * arrays are not empty.
-     * @param unarchiver The UnArchiver where the file selector should be added.
-     */
-    private void addFileSelectorIfNeeded(final UnArchiver unarchiver) {
-        if (this.includes.length != 0 || this.excludes.length != 0) {
-            final IncludeExcludeFileSelector fileSelector = new IncludeExcludeFileSelector();
-            if (this.includes.length != 0) {
-                fileSelector.setIncludes(this.includes);
-            }
-            if (this.excludes.length != 0) {
-                fileSelector.setExcludes(this.excludes);
-            }
-            unarchiver.setFileSelectors(new FileSelector[]{fileSelector});
-        }
     }
 }

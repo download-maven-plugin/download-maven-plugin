@@ -19,7 +19,7 @@ package io.github.download.maven.plugin.internal;
  * Thrown when the build environment can't provide what the download needs,
  * e.g. a referenced server is not configured.
  */
-public final class EnvironmentException extends Exception {
+public final class EnvironmentException extends DownloadException {
 
     /**
      * Serial version.

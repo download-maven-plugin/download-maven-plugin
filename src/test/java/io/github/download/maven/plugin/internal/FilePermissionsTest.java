@@ -2,7 +2,6 @@ package io.github.download.maven.plugin.internal;
 
 import java.io.File;
 import java.io.IOException;
-import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
 import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
@@ -23,7 +22,7 @@ public class FilePermissionsTest {
     public ExpectedException exceptionRule = ExpectedException.none();
 
     @Test
-    public void applyExecutable() throws IOException, MojoExecutionException {
+    public void applyExecutable() throws IOException, DownloadException {
         final File outputFile = this.temporaryFolder.newFile();
         new FilePermissions("+x", Mockito.mock(Log.class)).applyTo(outputFile);
         MatcherAssert.assertThat(
@@ -33,7 +32,7 @@ public class FilePermissionsTest {
     }
 
     @Test
-    public void applyExecutableAgain() throws IOException, MojoExecutionException {
+    public void applyExecutableAgain() throws IOException, DownloadException {
         final File outputFile = this.temporaryFolder.newFile();
         outputFile.setExecutable(true);
         new FilePermissions("+x", Mockito.mock(Log.class)).applyTo(outputFile);
@@ -49,13 +48,13 @@ public class FilePermissionsTest {
         assumeNotWindows();
         final File missing = new File(this.temporaryFolder.getRoot(), "missing");
         Assert.assertThrows(
-            MojoExecutionException.class,
+            DownloadException.class,
             () -> new FilePermissions("+x", Mockito.mock(Log.class)).applyTo(missing)
         );
     }
 
     @Test
-    public void noPermissionsIsNoop() throws IOException, MojoExecutionException {
+    public void noPermissionsIsNoop() throws IOException, DownloadException {
         // on Windows File#canExecute is always true, so "not executable" can't be observed
         assumeNotWindows();
         final File outputFile = this.temporaryFolder.newFile();
@@ -69,7 +68,7 @@ public class FilePermissionsTest {
         final File outputFile = this.temporaryFolder.newFile();
         outputFile.setExecutable(true);
         Assert.assertThrows(
-            MojoExecutionException.class,
+            DownloadException.class,
             () -> new FilePermissions("-x", Mockito.mock(Log.class)).applyTo(outputFile)
         );
     }
