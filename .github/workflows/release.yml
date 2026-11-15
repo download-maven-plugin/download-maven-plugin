@@ -29,10 +29,10 @@ jobs:
           git_commit_gpgsign: true
 
       - name: Set release version version
-        run: mvn versions:set -DnewVersion=${{ github.event.inputs.tag }} --batch-mode
+        run: ./mvnw versions:set -DnewVersion=${{ github.event.inputs.tag }} --batch-mode
 
       - name: Build with ITs
-        run: mvn -T 1C -B verify -P its
+        run: ./mvnw -T 1C -B verify -P its
 
       - name: Create branch and tag
         run: |
@@ -42,7 +42,7 @@ jobs:
           git checkout -b ${{ github.event.inputs.tag }}
 
       - name: Publish package
-        run: mvn deploy -Prelease -DskipTests --batch-mode --errors
+        run: ./mvnw deploy -Prelease -DskipTests --batch-mode --errors
         env:
           MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
@@ -55,7 +55,7 @@ jobs:
           git checkout origin/master
 
       - name: Set next snapshot version
-        run: mvn versions:set -DnextSnapshot=true -DnextSnapshotIndexToIncrement=3 --batch-mode
+        run: ./mvnw versions:set -DnextSnapshot=true -DnextSnapshotIndexToIncrement=3 --batch-mode
 
       - name: Push new version to Github
         run: |
