@@ -15,18 +15,19 @@
  */
 package io.github.download.maven.plugin.internal.cache;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InvalidClassException;
 import java.io.ObjectInputStream;
-import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
 import java.io.RandomAccessFile;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
@@ -120,13 +121,21 @@ final class FileBackedIndex implements FileIndex {
      */
     @SuppressWarnings("unchecked")
     private void load(final File store) throws IncompatibleIndexException, IOException {
-        if (store.length() != 0L) {
+        if (!store.exists()) {
+            return;
+        }
+        final byte[] content;
+        try (
+            RandomAccessFile file = new RandomAccessFile(store, "r");
+            FileChannel channel = file.getChannel();
+            FileLock ignored = channel.lock(0L, Long.MAX_VALUE, true)
+        ) {
+            content = FileBackedIndex.readFully(channel);
+        }
+        if (content.length != 0) {
             try (
-                RandomAccessFile file = new RandomAccessFile(store, "r");
-                FileChannel channel = file.getChannel();
-                FileLock ignored = channel.lock(0L, Long.MAX_VALUE, true);
                 ObjectInputStream deserialize = new ObjectInputStream(
-                    Files.newInputStream(store.toPath())
+                    new ByteArrayInputStream(content)
                 )
             ) {
                 final Map<URI, String> newEntries = (Map<URI, String>) deserialize.readObject();
@@ -139,17 +148,47 @@ final class FileBackedIndex implements FileIndex {
 
     /**
      * Saves current im-memory index to file based storage.
+     * The index is serialized in memory first, so the file is only truncated and
+     * written while the exclusive lock is held. File locks are mandatory on Windows,
+     * any write to the file before the lock is acquired fails if another process
+     * holds a lock on it.
      */
     private void save() {
-        try (
-            FileOutputStream file = new FileOutputStream(this.storage);
-            ObjectOutput res = new ObjectOutputStream(file);
-            FileChannel channel = file.getChannel();
-            FileLock ignored = channel.lock()
-        ) {
-            res.writeObject(this.index);
+        try {
+            final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (ObjectOutputStream res = new ObjectOutputStream(bytes)) {
+                res.writeObject(this.index);
+            }
+            try (
+                RandomAccessFile file = new RandomAccessFile(this.storage, "rw");
+                FileChannel channel = file.getChannel();
+                FileLock ignored = channel.lock()
+            ) {
+                channel.truncate(0L);
+                final ByteBuffer buffer = ByteBuffer.wrap(bytes.toByteArray());
+                while (buffer.hasRemaining()) {
+                    channel.write(buffer);
+                }
+                channel.force(false);
+            }
         } catch (final IOException ex) {
             throw new IllegalStateException(ex);
         }
+    }
+
+    /**
+     * Reads the whole content of the channel from its beginning.
+     * @param channel Channel to read.
+     * @return Channel content.
+     * @throws IOException If reading fails.
+     */
+    private static byte[] readFully(final FileChannel channel) throws IOException {
+        final ByteBuffer buffer = ByteBuffer.allocate(Math.toIntExact(channel.size()));
+        channel.position(0L);
+        int read = 0;
+        while (buffer.hasRemaining() && read >= 0) {
+            read = channel.read(buffer);
+        }
+        return Arrays.copyOf(buffer.array(), buffer.position());
     }
 }
