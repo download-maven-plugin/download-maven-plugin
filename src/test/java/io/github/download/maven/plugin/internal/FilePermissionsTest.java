@@ -43,6 +43,23 @@ public class FilePermissionsTest {
     }
 
     @Test
+    public void failIfPermissionCannotBeApplied() {
+        final File missing = new File(this.temporaryFolder.getRoot(), "missing");
+        Assert.assertThrows(
+            MojoExecutionException.class,
+            () -> new FilePermissions("+x", Mockito.mock(Log.class)).applyTo(missing)
+        );
+    }
+
+    @Test
+    public void noPermissionsIsNoop() throws IOException, MojoExecutionException {
+        final File outputFile = this.temporaryFolder.newFile();
+        outputFile.setExecutable(false);
+        new FilePermissions(null, Mockito.mock(Log.class)).applyTo(outputFile);
+        MatcherAssert.assertThat(outputFile.canExecute(), Matchers.is(false));
+    }
+
+    @Test
     public void failOnUnknownCommand() throws IOException {
         final File outputFile = this.temporaryFolder.newFile();
         outputFile.setExecutable(true);

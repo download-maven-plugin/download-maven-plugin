@@ -1,18 +1,26 @@
 package io.github.download.maven.plugin.internal;
 
+import com.github.tomakehurst.wiremock.http.Fault;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import javax.net.ssl.SSLHandshakeException;
 import org.apache.http.auth.AUTH;
 import org.apache.maven.execution.MavenExecutionRequest;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.logging.Log;
+import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.SystemStreamLog;
+import org.apache.maven.settings.Server;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
+import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.net.URI;
 import java.nio.file.Files;
 import java.util.LinkedList;
@@ -26,7 +34,11 @@ import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.fail;
 import static org.junit.Assert.assertThrows;
+import static org.hamcrest.Matchers.containsString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link HttpFileRequester}
@@ -47,13 +59,14 @@ public class HttpFileRequesterTest {
         this.outputFile = new File(this.outputDirectory.getRoot(), OUTPUT_FILE_NAME);
     }
 
+    @SuppressWarnings("deprecation")
+    private static MavenSession sessionWithServers(final Server... servers) {
+        final MavenExecutionRequest request = mock(MavenExecutionRequest.class);
+        when(request.getServers()).thenReturn(java.util.Arrays.asList(servers));
+        return new MavenSession(null, request, null, new LinkedList<>());
+    }
+
     private HttpFileRequester.Builder createFileRequesterBuilder() throws Exception {
-        class MavenSessionStub extends MavenSession {
-            @SuppressWarnings("deprecation")
-            MavenSessionStub() {
-                super(null, mock(MavenExecutionRequest.class), null, new LinkedList<>());
-            }
-        }
 
         return new HttpFileRequester.Builder()
                 .withProgressReport(new LoggingProgressReport(LOG))
@@ -63,7 +76,7 @@ public class HttpFileRequesterTest {
                 .withRedirectsEnabled(false)
                 .withPreemptiveAuth(false)
                 .withLog(LOG)
-                .withMavenSession(new MavenSessionStub());
+                .withMavenSession(sessionWithServers());
     }
 
     /**
@@ -176,5 +189,189 @@ public class HttpFileRequesterTest {
         } catch (Exception e) {
             assertThat(e, is(instanceOf(DownloadFailureException.class)));
         }
+    }
+
+    /**
+     * Credentials of a server from settings.xml are decrypted and used for authentication.
+     */
+    @Test
+    public void testServerIdAuthWithDecryptedPassword() throws Exception {
+        this.wireMock.stubFor(get(anyUrl())
+                .willReturn(unauthorized().withHeader(AUTH.WWW_AUTH, "Basic")));
+        this.wireMock.stubFor(get(anyUrl())
+                .withBasicAuth("billg", "hunter2")
+                .willReturn(ok().withBody("Hello, server!")));
+        final SecDispatcher dispatcher = mock(SecDispatcher.class);
+        when(dispatcher.decrypt("{encrypted}")).thenReturn("hunter2");
+
+        createFileRequesterBuilder()
+                .withServerId("my-server")
+                .withMavenSession(sessionWithServers(server("my-server", "billg", "{encrypted}")))
+                .withSecDispatcher(dispatcher)
+                .build()
+                .download(this.outputFile, emptyList());
+
+        assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("Hello, server!"));
+    }
+
+    /**
+     * If the password can't be decrypted it is used as is.
+     */
+    @Test
+    public void testServerIdAuthFallsBackToRawPasswordIfDecryptionFails() throws Exception {
+        this.wireMock.stubFor(get(anyUrl())
+                .willReturn(unauthorized().withHeader(AUTH.WWW_AUTH, "Basic")));
+        this.wireMock.stubFor(get(anyUrl())
+                .withBasicAuth("billg", "plain")
+                .willReturn(ok().withBody("Hello, server!")));
+        final SecDispatcher dispatcher = mock(SecDispatcher.class);
+        when(dispatcher.decrypt(any())).thenThrow(new SecDispatcherException("no master password"));
+
+        createFileRequesterBuilder()
+                .withServerId("my-server")
+                .withMavenSession(sessionWithServers(server("my-server", "billg", "plain")))
+                .withSecDispatcher(dispatcher)
+                .build()
+                .download(this.outputFile, emptyList());
+
+        assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("Hello, server!"));
+        verify(dispatcher).decrypt("plain");
+    }
+
+    @Test
+    public void testUnknownServerIdFails() {
+        final MojoExecutionException error = assertThrows(
+            MojoExecutionException.class,
+            () -> createFileRequesterBuilder()
+                .withServerId("unknown")
+                .withSecDispatcher(mock(SecDispatcher.class))
+                .build()
+        );
+        assertThat(error.getMessage(), is("Server unknown not found"));
+    }
+
+    /**
+     * Requests are routed through the configured proxy.
+     */
+    @Test
+    public void testDownloadThroughProxy() throws Exception {
+        this.wireMock.stubFor(get(urlEqualTo("/file")).willReturn(ok().withBody("via proxy")));
+
+        createFileRequesterBuilder()
+                .withUri(new URI("http://target.invalid/file"))
+                .withProxyHost("localhost")
+                .withProxyPort(this.wireMock.port())
+                .build()
+                .download(this.outputFile, emptyList());
+
+        assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("via proxy"));
+        this.wireMock.verify(getRequestedFor(urlEqualTo("/file")).withHeader("Host", equalTo("target.invalid")));
+    }
+
+    /**
+     * Proxy credentials are sent after the proxy asks for them.
+     */
+    @Test
+    public void testDownloadThroughAuthenticatingProxy() throws Exception {
+        final String expected = "Basic " + Base64.getEncoder()
+            .encodeToString("puser:ppass".getBytes(StandardCharsets.UTF_8));
+        this.wireMock.stubFor(get(anyUrl())
+                .willReturn(aResponse().withStatus(407).withHeader("Proxy-Authenticate", "Basic realm=\"proxy\"")));
+        this.wireMock.stubFor(get(anyUrl())
+                .withHeader("Proxy-Authorization", equalTo(expected))
+                .willReturn(ok().withBody("via proxy")));
+
+        createFileRequesterBuilder()
+                .withUri(new URI("http://target.invalid/file"))
+                .withProxyHost("localhost")
+                .withProxyPort(this.wireMock.port())
+                .withProxyUserName("puser")
+                .withProxyPassword("ppass")
+                .build()
+                .download(this.outputFile, emptyList());
+
+        assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("via proxy"));
+    }
+
+    /**
+     * Proxy username without a password doesn't enable proxy authentication.
+     */
+    @Test
+    public void testProxyWithoutPasswordDoesNotAuthenticate() {
+        this.wireMock.stubFor(get(anyUrl())
+                .willReturn(aResponse().withStatus(407).withHeader("Proxy-Authenticate", "Basic realm=\"proxy\"")));
+
+        final DownloadFailureException error = assertThrows(
+            DownloadFailureException.class,
+            () -> createFileRequesterBuilder()
+                .withUri(new URI("http://target.invalid/file"))
+                .withProxyHost("localhost")
+                .withProxyPort(this.wireMock.port())
+                .withProxyUserName("puser")
+                .build()
+                .download(this.outputFile, emptyList())
+        );
+        assertThat(error.getHttpCode(), is(407));
+        this.wireMock.verify(1, getRequestedFor(anyUrl()));
+        this.wireMock.verify(0, getRequestedFor(anyUrl()).withHeader("Proxy-Authorization", matching(".*")));
+    }
+
+    /**
+     * An I/O failure while streaming the body is reported to the progress report and rethrown.
+     */
+    @Test
+    public void testStreamingErrorIsReported() {
+        this.wireMock.stubFor(get(anyUrl())
+                .willReturn(aResponse().withFault(Fault.MALFORMED_RESPONSE_CHUNK)));
+        final ProgressReport report = mock(ProgressReport.class);
+
+        assertThrows(
+            IOException.class,
+            () -> createFileRequesterBuilder()
+                .withProgressReport(report)
+                .build()
+                .download(this.outputFile, emptyList())
+        );
+        verify(report).error(any(IOException.class));
+    }
+
+    /**
+     * A response without a body doesn't create the output file.
+     */
+    @Test
+    public void testNoContentDoesNotCreateFile() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(noContent()));
+
+        createFileRequesterBuilder()
+                .build()
+                .download(this.outputFile, emptyList());
+
+        assertThat(this.outputFile.exists(), is(false));
+    }
+
+    /**
+     * 3xx responses fail the download when redirects are disabled.
+     */
+    @Test
+    public void testRedirectFailsWhenRedirectsDisabled() {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(temporaryRedirect("/elsewhere")
+            .withStatus(302)));
+
+        final DownloadFailureException error = assertThrows(
+            DownloadFailureException.class,
+            () -> createFileRequesterBuilder()
+                .build()
+                .download(this.outputFile, emptyList())
+        );
+        assertThat(error.getHttpCode(), is(302));
+        assertThat(error.getMessage(), containsString("followRedirects is false"));
+    }
+
+    private static Server server(final String id, final String username, final String password) {
+        final Server server = new Server();
+        server.setId(id);
+        server.setUsername(username);
+        server.setPassword(password);
+        return server;
     }
 }
