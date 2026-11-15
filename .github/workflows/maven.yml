@@ -29,7 +29,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
         java: [11, 17, 21]
+        maven: ['3.9.16']
         jdk: ['temurin']
+        # the oldest supported Maven (see <prerequisites> in pom.xml) on the oldest tested Java
+        include:
+          - { os: ubuntu-latest, java: 11, maven: '3.6.3', jdk: temurin }
+          - { os: windows-latest, java: 11, maven: '3.6.3', jdk: temurin }
+          - { os: macOS-latest, java: 11, maven: '3.6.3', jdk: temurin }
       fail-fast: false
 
     runs-on: ${{ matrix.os }}
@@ -41,5 +47,8 @@ jobs:
           distribution: ${{ matrix.jdk }}
           java-version: ${{ matrix.java }}
           cache: 'maven'
+      # quoted so that PowerShell on Windows doesn't split the property at the dots
+      - name: Use Maven ${{ matrix.maven }}
+        run: ./mvnw -B -N -q org.apache.maven.plugins:maven-wrapper-plugin:3.3.4:wrapper "-Dmaven=${{ matrix.maven }}" "-Dtype=only-script"
       - name: Build with Maven
         run: ./mvnw -T 1C -B verify -P its
