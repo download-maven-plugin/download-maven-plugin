@@ -85,15 +85,42 @@ final class FileBackedIndex implements FileIndex {
         this.storage = new File(baseDir, CACHE_FILENAME);
     }
 
+    /**
+     * Adds an entry and persists the index.
+     * The index file is read, merged and rewritten under a single exclusive lock,
+     * so concurrent processes sharing the cache cannot overwrite each other's
+     * entries. The index is serialized in memory before the file is truncated.
+     * File locks are mandatory on Windows, so the file is only written while
+     * the lock is held.
+     * @param uri Entry URI.
+     * @param path Entry path.
+     */
     @Override
     public void put(final URI uri, final String path) {
         this.index.put(uri, path);
-        try {
-            this.load(this.storage);
-        } catch (final IncompatibleIndexException | IOException exc) {
-            this.log.warn("Could not load index cache index file, it will be rewritten.");
+        try (
+            RandomAccessFile file = new RandomAccessFile(this.storage, "rw");
+            FileChannel channel = file.getChannel();
+            FileLock ignored = channel.lock()
+        ) {
+            try {
+                this.merge(FileBackedIndex.readFully(channel));
+            } catch (final IncompatibleIndexException | IOException exc) {
+                this.log.warn("Could not load index cache index file, it will be rewritten.");
+            }
+            final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (ObjectOutputStream res = new ObjectOutputStream(bytes)) {
+                res.writeObject(this.index);
+            }
+            channel.truncate(0L);
+            final ByteBuffer buffer = ByteBuffer.wrap(bytes.toByteArray());
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
+            channel.force(false);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
         }
-        this.save();
     }
 
     @Override
@@ -119,19 +146,27 @@ final class FileBackedIndex implements FileIndex {
      * @throws IncompatibleIndexException If the store cannot be read due to a deserialization issue
      * @throws IOException If any operation with index file is failed.
      */
-    @SuppressWarnings("unchecked")
     private void load(final File store) throws IncompatibleIndexException, IOException {
         if (!store.exists()) {
             return;
         }
-        final byte[] content;
         try (
             RandomAccessFile file = new RandomAccessFile(store, "r");
             FileChannel channel = file.getChannel();
             FileLock ignored = channel.lock(0L, Long.MAX_VALUE, true)
         ) {
-            content = FileBackedIndex.readFully(channel);
+            this.merge(FileBackedIndex.readFully(channel));
         }
+    }
+
+    /**
+     * Merges serialized index into the in-memory one, keeping in-memory entries.
+     * @param content Serialized index, may be empty.
+     * @throws IncompatibleIndexException If the content cannot be deserialized
+     * @throws IOException If the content is corrupted.
+     */
+    @SuppressWarnings("unchecked")
+    private void merge(final byte[] content) throws IncompatibleIndexException, IOException {
         if (content.length != 0) {
             try (
                 ObjectInputStream deserialize = new ObjectInputStream(
@@ -143,36 +178,6 @@ final class FileBackedIndex implements FileIndex {
             } catch (final ClassNotFoundException | InvalidClassException exc) {
                 throw new IncompatibleIndexException(exc);
             }
-        }
-    }
-
-    /**
-     * Saves current im-memory index to file based storage.
-     * The index is serialized in memory first, so the file is only truncated and
-     * written while the exclusive lock is held. File locks are mandatory on Windows,
-     * any write to the file before the lock is acquired fails if another process
-     * holds a lock on it.
-     */
-    private void save() {
-        try {
-            final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            try (ObjectOutputStream res = new ObjectOutputStream(bytes)) {
-                res.writeObject(this.index);
-            }
-            try (
-                RandomAccessFile file = new RandomAccessFile(this.storage, "rw");
-                FileChannel channel = file.getChannel();
-                FileLock ignored = channel.lock()
-            ) {
-                channel.truncate(0L);
-                final ByteBuffer buffer = ByteBuffer.wrap(bytes.toByteArray());
-                while (buffer.hasRemaining()) {
-                    channel.write(buffer);
-                }
-                channel.force(false);
-            }
-        } catch (final IOException ex) {
-            throw new IllegalStateException(ex);
         }
     }
 
