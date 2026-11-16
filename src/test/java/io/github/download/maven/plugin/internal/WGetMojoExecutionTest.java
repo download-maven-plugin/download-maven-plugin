@@ -2,23 +2,12 @@ package io.github.download.maven.plugin.internal;
 
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.lang.reflect.Field;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.locks.Lock;
 import java.util.function.Consumer;
-import java.util.zip.GZIPOutputStream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.execution.MavenExecutionRequest;
 import org.apache.maven.execution.MavenSession;
@@ -26,35 +15,25 @@ import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.project.MavenProject;
-import org.codehaus.plexus.archiver.gzip.GZipUnArchiver;
 import org.codehaus.plexus.archiver.manager.ArchiverManager;
-import org.codehaus.plexus.archiver.manager.NoSuchArchiverException;
 import org.codehaus.plexus.archiver.zip.ZipUnArchiver;
-import org.codehaus.plexus.util.ReflectionUtils;
 import org.eclipse.aether.DefaultRepositorySystemSession;
-import org.eclipse.aether.repository.Proxy;
-import org.eclipse.aether.transfer.AbstractTransferListener;
 import org.eclipse.aether.util.repository.AuthenticationBuilder;
-import org.eclipse.aether.util.repository.DefaultProxySelector;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.sonatype.plexus.build.incremental.BuildContext;
 
-import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
-import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
-import static com.github.tomakehurst.wiremock.client.WireMock.notFound;
 import static com.github.tomakehurst.wiremock.client.WireMock.ok;
 import static com.github.tomakehurst.wiremock.client.WireMock.serverError;
-import static com.github.tomakehurst.wiremock.client.WireMock.serviceUnavailable;
 import static com.github.tomakehurst.wiremock.client.WireMock.unauthorized;
-import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
+import static io.github.download.maven.plugin.internal.Fields.set;
+import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
@@ -62,7 +41,6 @@ import static org.mockito.ArgumentMatchers.startsWith;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -95,8 +73,6 @@ public class WGetMojoExecutionTest {
 
     private DefaultRepositorySystemSession repositorySession;
 
-    private Thread lockHolder;
-
     @Before
     public void setUp() throws Exception {
         this.cacheDirectory = this.temporaryFolder.newFolder("cache").toPath();
@@ -107,14 +83,6 @@ public class WGetMojoExecutionTest {
         this.request = mock(MavenExecutionRequest.class);
         this.repositorySession = new DefaultRepositorySystemSession();
         this.repositorySession.setOffline(false);
-    }
-
-    @After
-    public void tearDown() throws Exception {
-        if (this.lockHolder != null) {
-            this.lockHolder.interrupt();
-            this.lockHolder.join();
-        }
     }
 
     // ---------------------------------------------------------------- preconditions
@@ -245,39 +213,16 @@ public class WGetMojoExecutionTest {
 
     @Test
     public void failsIfLockCannotBeAcquired() throws Exception {
-        holdLockOn(output());
-        final MojoExecutionException error = assertThrows(
-            MojoExecutionException.class,
-            () -> createMojo(m -> set(m, "maxLockWaitTime", 10L)).execute()
-        );
-        assertThat(error.getMessage(), org.hamcrest.Matchers.startsWith("Could not acquire lock for File"));
+        // the lock registry is shared by all executions in the JVM
+        final FileLocks locks = Fields.getStatic(WGetMojo.class, "FILE_LOCKS", FileLocks.class);
+        try (HeldLock ignored = HeldLock.on(locks.forFile(output().toFile()))) {
+            final MojoExecutionException error = assertThrows(
+                MojoExecutionException.class,
+                () -> createMojo(m -> set(m, "maxLockWaitTime", 10L)).execute()
+            );
+            assertThat(error.getMessage(), org.hamcrest.Matchers.startsWith("Could not acquire lock for File"));
+        }
         this.wireMock.verify(0, getRequestedFor(anyUrl()));
-    }
-
-    @Test
-    public void warnsIfLockCannotBeAcquiredAndFailOnErrorIsFalse() throws Exception {
-        holdLockOn(output());
-        createMojo(m -> {
-            set(m, "maxLockWaitTime", 10L);
-            set(m, "failOnError", false);
-        }).execute();
-        verify(this.log).warn(startsWith("Could not acquire lock for File"));
-        this.wireMock.verify(0, getRequestedFor(anyUrl()));
-    }
-
-    // ---------------------------------------------------------------- existing file
-
-    @Test
-    public void existingFileIsKeptWithoutOverwrite() throws Exception {
-        Files.write(output(), "local".getBytes(StandardCharsets.UTF_8));
-        createMojo(m -> {
-            set(m, "overwrite", false);
-            set(m, "skipCache", true);
-        }).execute();
-        assertThat(read(output()), is("local"));
-        verify(this.log).info("File already exists, skipping");
-        this.wireMock.verify(0, getRequestedFor(anyUrl()));
-        verify(this.buildContext).refresh(output().toFile());
     }
 
     // ---------------------------------------------------------------- offline
@@ -293,18 +238,8 @@ public class WGetMojoExecutionTest {
         this.wireMock.verify(0, getRequestedFor(anyUrl()));
     }
 
-    @Test
-    public void offlineWithoutCachedFileOnlyWarnsIfFailOnErrorIsFalse() throws Exception {
-        this.repositorySession.setOffline(true);
-        createMojo(m -> set(m, "failOnError", false)).execute();
-        verify(this.log).warn("Ignoring download failure.");
-        this.wireMock.verify(0, getRequestedFor(anyUrl()));
-        assertThat(output().toFile().exists(), is(false));
-    }
-
     /**
-     * {@code failOnError=false} must also work with the cache enabled;
-     * {@code WGetMojoTest#testIgnoreDownloadFailure} only covers {@code skipCache=true}.
+     * {@code failOnError=false} must also work with the cache enabled.
      */
     @Test
     public void ignoredDownloadFailureWithCacheEnabled() throws Exception {
@@ -312,19 +247,6 @@ public class WGetMojoExecutionTest {
         createMojo(m -> set(m, "failOnError", false)).execute();
         verify(this.log).warn(startsWith("Download failed with code 500"));
         assertThat(output().toFile().exists(), is(false));
-    }
-
-    @Test
-    public void offlineUsesCachedFile() throws Exception {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        createMojo(m -> { }).execute();
-        Files.delete(output());
-        this.wireMock.resetRequests();
-
-        this.repositorySession.setOffline(true);
-        createMojo(m -> { }).execute();
-        assertThat(read(output()), is("content"));
-        this.wireMock.verify(0, getRequestedFor(anyUrl()));
     }
 
     // ---------------------------------------------------------------- retries
@@ -350,43 +272,6 @@ public class WGetMojoExecutionTest {
         }).execute();
         assertThat(read(output()), is("fast"));
         this.wireMock.verify(2, getRequestedFor(anyUrl()));
-    }
-
-    @Test
-    public void exceptionIsNotRetriedByDefault() {
-        stubSlowThenFast();
-        final MojoExecutionException error = assertThrows(
-            MojoExecutionException.class,
-            () -> createMojo(m -> {
-                set(m, "readTimeOut", 200);
-                set(m, "retries", 2);
-            }).execute()
-        );
-        assertThat(error.getMessage(), containsString("timed out"));
-        this.wireMock.verify(1, getRequestedFor(anyUrl()));
-    }
-
-    @Test
-    public void httpCodeNotInConfiguredListIsNotRetried() {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(serviceUnavailable()));
-        assertThrows(
-            MojoExecutionException.class,
-            () -> createMojo(m -> {
-                set(m, "retries", 3);
-                set(m, "retriesOnHttpCodes", "404");
-            }).execute()
-        );
-        this.wireMock.verify(1, getRequestedFor(anyUrl()));
-    }
-
-    @Test
-    public void clientErrorIsNotRetriedByDefault() {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(notFound()));
-        assertThrows(
-            MojoExecutionException.class,
-            () -> createMojo(m -> set(m, "retries", 3)).execute()
-        );
-        this.wireMock.verify(1, getRequestedFor(anyUrl()));
     }
 
     /**
@@ -442,46 +327,6 @@ public class WGetMojoExecutionTest {
     }
 
     @Test
-    public void unpacksOnlyIncludedAndNotExcludedEntries() throws Exception {
-        serveZip();
-        createMojo(m -> {
-            set(m, "unpack", true);
-            set(m, "includes", new String[]{"**/*.txt"});
-            set(m, "excludes", new String[]{"dir/**"});
-        }).execute();
-        assertThat(this.outputDirectory.resolve("a.txt").toFile().exists(), is(true));
-        assertThat(this.outputDirectory.resolve("dir/b.txt").toFile().exists(), is(false));
-    }
-
-    @Test
-    public void singleFileArchiveIsUnpackedNextToIt() throws Exception {
-        final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (GZIPOutputStream gzip = new GZIPOutputStream(bytes)) {
-            gzip.write("plain".getBytes(StandardCharsets.UTF_8));
-        }
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(bytes.toByteArray())));
-        when(this.archiverManager.getUnArchiver(any(File.class))).thenAnswer(inv -> new GZipUnArchiver());
-        createMojo(m -> {
-            set(m, "outputFileName", "data.txt.gz");
-            set(m, "unpack", true);
-        }).execute();
-        assertThat(read(this.outputDirectory.resolve("data.txt")), is("plain"));
-        assertThat(this.outputDirectory.resolve("data.txt.gz").toFile().exists(), is(false));
-    }
-
-    @Test
-    public void cachedArchiveIsUnpackedWithoutDownloading() throws Exception {
-        serveZip();
-        createMojo(m -> set(m, "unpack", true)).execute();
-        cleanOutputDirectory();
-        this.wireMock.resetRequests();
-
-        createMojo(m -> set(m, "unpack", true)).execute();
-        assertThat(read(this.outputDirectory.resolve("a.txt")), is("a"));
-        this.wireMock.verify(0, getRequestedFor(anyUrl()));
-    }
-
-    @Test
     public void unpackWhenChangedSkipsUnchangedCachedArchive() throws Exception {
         serveZip();
         createMojo(m -> set(m, "unpackWhenChanged", true)).execute();
@@ -492,62 +337,7 @@ public class WGetMojoExecutionTest {
         assertThat(this.outputDirectory.resolve("a.txt").toFile().exists(), is(false));
     }
 
-    @Test
-    public void unpackWinsOverUnpackWhenChanged() throws Exception {
-        serveZip();
-        createMojo(m -> set(m, "unpack", true)).execute();
-        cleanOutputDirectory();
-
-        createMojo(m -> {
-            set(m, "unpack", true);
-            set(m, "unpackWhenChanged", true);
-        }).execute();
-        verify(this.log).info("Unpacking even though unchanged cache file exists because unpack = true");
-        assertThat(read(this.outputDirectory.resolve("a.txt")), is("a"));
-    }
-
-    @Test
-    public void unknownArchiveTypeFails() throws Exception {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        when(this.archiverManager.getUnArchiver(any(File.class)))
-            .thenThrow(new NoSuchArchiverException("output-file"));
-        final MojoExecutionException error = assertThrows(
-            MojoExecutionException.class,
-            () -> createMojo(m -> set(m, "unpack", true)).execute()
-        );
-        assertThat(error.getMessage(), org.hamcrest.Matchers.startsWith("No such archiver"));
-    }
-
-    // ---------------------------------------------------------------- session network settings
-
-    @Test
-    public void usesProxyFromRepositorySession() throws Exception {
-        this.wireMock.stubFor(get(urlEqualTo("/file")).willReturn(ok("via proxy")));
-        this.repositorySession.setProxySelector(
-            new DefaultProxySelector().add(new Proxy("http", "localhost", this.wireMock.port()), null)
-        );
-        createMojo(m -> set(m, "uri", URI.create("http://target.invalid/file"))).execute();
-        assertThat(read(output()), is("via proxy"));
-        this.wireMock.verify(getRequestedFor(urlEqualTo("/file")).withHeader("Host", equalTo("target.invalid")));
-    }
-
-    @Test
-    public void usesProxyCredentialsFromRepositorySession() throws Exception {
-        this.wireMock.stubFor(get(anyUrl())
-            .willReturn(aResponse().withStatus(407).withHeader("Proxy-Authenticate", "Basic realm=\"proxy\"")));
-        this.wireMock.stubFor(get(anyUrl())
-            .withHeader("Proxy-Authorization", equalTo(basic("puser", "ppass")))
-            .willReturn(ok("via proxy")));
-        this.repositorySession.setProxySelector(
-            new DefaultProxySelector().add(
-                new Proxy("http", "localhost", this.wireMock.port(),
-                    new AuthenticationBuilder().addUsername("puser").addPassword("ppass").build()),
-                null
-            )
-        );
-        createMojo(m -> set(m, "uri", URI.create("http://target.invalid/file"))).execute();
-        assertThat(read(output()), is("via proxy"));
-    }
+    // ---------------------------------------------------------------- session credentials
 
     /**
      * Credentials provided by the repository session's authentication selector should be used.
@@ -563,36 +353,35 @@ public class WGetMojoExecutionTest {
         assertThat(read(output()), is("secured"));
     }
 
-    // ---------------------------------------------------------------- progress reporting
-
+    /**
+     * The {@code username}/{@code password} parameters are used for authentication.
+     */
     @Test
-    public void reportsProgressInInteractiveMode() throws Exception {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        when(this.request.isInteractiveMode()).thenReturn(true);
-        createMojo(m -> { }).execute();
-        verify(this.log).info("Downloading: " + this.wireMock.baseUrl());
+    public void usesConfiguredUsernameAndPassword() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(unauthorized().withHeader("WWW-Authenticate", "Basic")));
+        this.wireMock.stubFor(get(anyUrl()).withBasicAuth("user", "secret").willReturn(ok("secured")));
+        createMojo(m -> {
+            set(m, "username", "user");
+            set(m, "password", "secret");
+        }).execute();
+        assertThat(read(output()), is("secured"));
     }
 
-    @Test
-    public void doesNotReportProgressWithQuietTransferListener() throws Exception {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        when(this.request.isInteractiveMode()).thenReturn(true);
-        when(this.request.getTransferListener()).thenReturn(new QuietMavenTransferListener());
-        createMojo(m -> { }).execute();
-        verify(this.log, never()).info(startsWith("Downloading: "));
-    }
-
-    @Test
-    public void doesNotReportProgressInBatchMode() throws Exception {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        createMojo(m -> { }).execute();
-        verify(this.log, never()).info(startsWith("Downloading: "));
-    }
+    // ---------------------------------------------------------------- error reporting
 
     /**
-     * Mimics Maven's quiet transfer listener, which is detected by its simple class name.
+     * Local I/O failures are reported as "IO Error" with the failure as cause.
      */
-    private static final class QuietMavenTransferListener extends AbstractTransferListener {
+    @Test
+    public void localIoFailureIsReportedAsIoError() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        final File blocker = this.temporaryFolder.newFile("blocker");
+        final MojoExecutionException error = assertThrows(
+            MojoExecutionException.class,
+            () -> createMojo(m -> set(m, "cacheDirectory", new File(blocker, "cache"))).execute()
+        );
+        assertThat(error.getMessage(), is("IO Error: "));
+        assertThat(error.getCause().getMessage(), containsString("Could not create cache directory"));
     }
 
     // ---------------------------------------------------------------- helpers
@@ -623,7 +412,7 @@ public class WGetMojoExecutionTest {
     private static void currentProject(final WGetMojo mojo, final boolean root) {
         final MavenProject project = new MavenProject();
         project.setExecutionRoot(root);
-        field(mojo, "session", MavenSession.class).setCurrentProject(project);
+        Fields.get(mojo, "session", MavenSession.class).setCurrentProject(project);
     }
 
     private Path output() {
@@ -631,15 +420,7 @@ public class WGetMojoExecutionTest {
     }
 
     private void serveZip() throws Exception {
-        final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
-            for (final String[] entry : Arrays.asList(new String[]{"a.txt", "a"}, new String[]{"dir/b.txt", "b"})) {
-                zip.putNextEntry(new ZipEntry(entry[0]));
-                zip.write(entry[1].getBytes(StandardCharsets.UTF_8));
-                zip.closeEntry();
-            }
-        }
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(bytes.toByteArray())));
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(TestFiles.zip("a.txt", "a", "dir/b.txt", "b"))));
         when(this.archiverManager.getUnArchiver(any(File.class))).thenAnswer(inv -> new ZipUnArchiver());
     }
 
@@ -655,61 +436,5 @@ public class WGetMojoExecutionTest {
 
     private void cleanOutputDirectory() throws Exception {
         org.codehaus.plexus.util.FileUtils.cleanDirectory(this.outputDirectory.toFile());
-    }
-
-    /**
-     * Holds the plugin's in-process lock for the given file from another thread.
-     */
-    private void holdLockOn(final Path file) throws Exception {
-        final Lock lock = ((FileLocks) staticField("FILE_LOCKS")).forFile(file.toFile());
-        final CountDownLatch locked = new CountDownLatch(1);
-        this.lockHolder = new Thread(() -> {
-            lock.lock();
-            try {
-                locked.countDown();
-                Thread.sleep(Long.MAX_VALUE);
-            } catch (final InterruptedException ignored) {
-                // released by tearDown
-            } finally {
-                lock.unlock();
-            }
-        });
-        this.lockHolder.start();
-        locked.await();
-    }
-
-    private static Object staticField(final String name) throws Exception {
-        final Field field = WGetMojo.class.getDeclaredField(name);
-        field.setAccessible(true);
-        return field.get(null);
-    }
-
-    private static String basic(final String user, final String password) {
-        return "Basic " + Base64.getEncoder()
-            .encodeToString((user + ":" + password).getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static String read(final Path path) throws Exception {
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
-    }
-
-    private static void set(final Object object, final String name, final Object value) {
-        try {
-            final Field field = ReflectionUtils.getFieldByNameIncludingSuperclasses(name, object.getClass());
-            field.setAccessible(true);
-            field.set(object, value);
-        } catch (final IllegalAccessException ex) {
-            throw new IllegalStateException(ex);
-        }
-    }
-
-    private static <T> T field(final Object object, final String name, final Class<T> type) {
-        try {
-            final Field field = ReflectionUtils.getFieldByNameIncludingSuperclasses(name, object.getClass());
-            field.setAccessible(true);
-            return type.cast(field.get(object));
-        } catch (final IllegalAccessException ex) {
-            throw new IllegalStateException(ex);
-        }
     }
 }

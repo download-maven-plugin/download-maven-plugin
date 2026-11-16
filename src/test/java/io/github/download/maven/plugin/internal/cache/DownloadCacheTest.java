@@ -3,7 +3,6 @@ package io.github.download.maven.plugin.internal.cache;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
 import java.io.File;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import org.apache.commons.codec.digest.DigestUtils;
 import java.io.IOException;
@@ -13,6 +12,8 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static io.github.download.maven.plugin.internal.TestFiles.read;
+import static io.github.download.maven.plugin.internal.TestFiles.write;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
@@ -42,7 +43,7 @@ public class DownloadCacheTest {
         this.log = mock(Log.class);
         this.noChecksums = new Checksums(null, null, null, null, this.log);
         this.source = this.temporaryFolder.newFile("file.txt");
-        Files.write(this.source.toPath(), "v1".getBytes(StandardCharsets.UTF_8));
+        write(this.source, "v1");
     }
 
     @Test
@@ -86,7 +87,7 @@ public class DownloadCacheTest {
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         Files.delete(cache.getArtifact(URI_UNDER_TEST, this.noChecksums).toPath());
         assertThat(cache.getArtifact(URI_UNDER_TEST, this.noChecksums), is(nullValue()));
-        Files.write(this.source.toPath(), "v2".getBytes(StandardCharsets.UTF_8));
+        write(this.source, "v2");
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         assertThat(read(cache.getArtifact(URI_UNDER_TEST, this.noChecksums)), is("v2"));
     }
@@ -95,7 +96,7 @@ public class DownloadCacheTest {
     public void installKeepsExistingValidEntry() throws Exception {
         final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
-        Files.write(this.source.toPath(), "v2".getBytes(StandardCharsets.UTF_8));
+        write(this.source, "v2");
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         assertThat(read(cache.getArtifact(URI_UNDER_TEST, this.noChecksums)), is("v1"));
     }
@@ -106,9 +107,5 @@ public class DownloadCacheTest {
         new DownloadCache(dir, this.log).install(URI_UNDER_TEST, this.source, this.noChecksums);
         final File cached = new DownloadCache(dir, this.log).getArtifact(URI_UNDER_TEST, this.noChecksums);
         assertThat(read(cached), is("v1"));
-    }
-
-    private static String read(final File file) throws Exception {
-        return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
     }
 }

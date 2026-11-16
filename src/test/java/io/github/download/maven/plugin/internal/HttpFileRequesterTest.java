@@ -331,4 +331,41 @@ public class HttpFileRequesterTest {
 
         assertThat(String.join("", Files.readAllLines(this.outputFile.toPath())), is("Hello, gzip!"));
     }
+
+    /**
+     * The query string of the resource is sent unchanged.
+     */
+    @Test
+    public void testQueryIsSent() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody("Hello, query!")));
+
+        createFileRequesterBuilder()
+                .withUri(new URI("http://localhost:" + this.wireMock.port() + "/?query=value"))
+                .build()
+                .download(this.outputFile, emptyList());
+
+        this.wireMock.verify(getRequestedFor(anyUrl()).withQueryParam("query", equalTo("value")));
+    }
+
+    /**
+     * All redirect codes are followed when redirects are enabled.
+     */
+    @Test
+    public void testRedirectsAreFollowedWhenEnabled() throws Exception {
+        this.wireMock.stubFor(get(urlEqualTo("/new")).willReturn(ok().withBody("Hello, redirect!")));
+        for (final int code : new int[]{301, 302, 303, 307, 308}) {
+            Files.deleteIfExists(this.outputFile.toPath());
+            this.wireMock.stubFor(get(urlEqualTo("/" + code))
+                    .willReturn(aResponse().withStatus(code).withHeader("Location", "/new")));
+
+            createFileRequesterBuilder()
+                    .withUri(new URI("http://localhost:" + this.wireMock.port() + "/" + code))
+                    .withRedirectsEnabled(true)
+                    .build()
+                    .download(this.outputFile, emptyList());
+
+            assertThat("redirect " + code, String.join("", Files.readAllLines(this.outputFile.toPath())),
+                    is("Hello, redirect!"));
+        }
+    }
 }

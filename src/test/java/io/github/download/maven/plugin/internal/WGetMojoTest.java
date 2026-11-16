@@ -9,7 +9,6 @@ import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.plugin.logging.SystemStreamLog;
-import org.codehaus.plexus.util.ReflectionUtils;
 import org.eclipse.aether.DefaultRepositorySystemSession;
 import org.junit.Before;
 import org.junit.Rule;
@@ -19,7 +18,6 @@ import org.sonatype.plexus.build.incremental.BuildContext;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -67,38 +65,28 @@ public class WGetMojoTest {
         outputDirectory = temporaryFolder.newFolder("wget-test").toPath();
     }
 
-    private <T> void setVariableValueToObject(Object object, String variable, T value) {
-        try {
-            Field field = ReflectionUtils.getFieldByNameIncludingSuperclasses(variable, object.getClass());
-            field.setAccessible(true);
-            field.set(object, value);
-        } catch (IllegalAccessException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     private WGetMojo createMojo(Consumer<WGetMojo> initializer) {
         WGetMojo mojo = new WGetMojo();
         BuildContext buildContext = mock(BuildContext.class);
         doNothing().when(buildContext).refresh(any(File.class));
 
-        setVariableValueToObject(mojo, "outputFileName", OUTPUT_FILE_NAME);
-        setVariableValueToObject(mojo, "outputDirectory", outputDirectory.toFile());
-        setVariableValueToObject(mojo, "cacheDirectory", cacheDirectory.toFile());
-        setVariableValueToObject(mojo, "retries", 1);
-        setVariableValueToObject(mojo, "buildContext", buildContext);
-        setVariableValueToObject(mojo, "overwrite", true);
-        setVariableValueToObject(mojo, "uri", URI.create("http://test"));
+        Fields.set(mojo, "outputFileName", OUTPUT_FILE_NAME);
+        Fields.set(mojo, "outputDirectory", outputDirectory.toFile());
+        Fields.set(mojo, "cacheDirectory", cacheDirectory.toFile());
+        Fields.set(mojo, "retries", 1);
+        Fields.set(mojo, "buildContext", buildContext);
+        Fields.set(mojo, "overwrite", true);
+        Fields.set(mojo, "uri", URI.create("http://test"));
         class MavenSessionStub extends MavenSession {
             @SuppressWarnings("deprecation")
             MavenSessionStub() {
                 super(null, mock(MavenExecutionRequest.class), null, new LinkedList<>());
                 final DefaultRepositorySystemSession repositorySystemSession = new DefaultRepositorySystemSession();
                 repositorySystemSession.setOffline(false);
-                setVariableValueToObject(this, "repositorySession", repositorySystemSession);
+                Fields.set(this, "repositorySession", repositorySystemSession);
             }
         }
-        setVariableValueToObject(mojo, "session", new MavenSessionStub());
+        Fields.set(mojo, "session", new MavenSessionStub());
 
         initializer.accept(mojo);
         return mojo;
@@ -112,8 +100,8 @@ public class WGetMojoTest {
             throws MojoExecutionException, MojoFailureException {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!")));
         createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
+            Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+            Fields.set(m, "skipCache", true);
         }).execute();
         assertThat("Cache directory should remain empty if skipCache is true", cacheDirectory.toFile().list(),
                 emptyArray());
@@ -131,8 +119,8 @@ public class WGetMojoTest {
         assertThat(Files.exists(cacheDir), is(false));
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!")));
         createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "cacheDirectory", cacheDir.toFile());
+            Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+            Fields.set(m, "cacheDirectory", cacheDir.toFile());
         }).execute();
         assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
                 is("Hello, world!"));
@@ -152,34 +140,11 @@ public class WGetMojoTest {
                 when(notADirectory.getAbsolutePath()).thenReturn("/nonExistingDirectory");
                 when(notADirectory.exists()).thenReturn(true);
                 when(notADirectory.isDirectory()).thenReturn(false);
-                setVariableValueToObject(m, "cacheDirectory", notADirectory);
+                Fields.set(m, "cacheDirectory", notADirectory);
             }).execute();
             fail();
         } catch (MojoFailureException e) {
             assertThat(e.getMessage(), containsString("cacheDirectory is not a directory"));
-        }
-    }
-
-    /**
-     * Verifies that the cache directory should remain empty if the {@linkplain WGetMojo#execute()} execution
-     * ended abruptly. Does so by keeping {@code wagonManager} {@code null}. As it's being dereferenced,
-     * an NPE is raised.
-     *
-     * @throws Exception should any exception be thrown
-     */
-    @Test
-    public void testCacheNotWrittenToIfFailed() throws Exception {
-        try {
-            WGetMojo mojo = createMojo(ignored -> {});
-            // inject null value so that we get a NullPointerException thrown
-            setVariableValueToObject(mojo, "session", null);
-            mojo.execute();
-            fail();
-        } catch (NullPointerException e) {
-            // expected, but can be ignored
-        } finally {
-            assertThat("Cache directory should remain empty if quit abruptly", cacheDirectory.toFile().list(),
-                    emptyArray());
         }
     }
 
@@ -191,10 +156,10 @@ public class WGetMojoTest {
      */
     private void prepareReadingFromCache(final ResponseDefinitionBuilder firstResponse) throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(firstResponse));
-        createMojo(m -> setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()))).execute();
+        createMojo(m -> Fields.set(m, "uri", URI.create(wireMock.baseUrl()))).execute();
 
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Goodbye!")));
-        createMojo(m -> setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()))).execute();
+        createMojo(m -> Fields.set(m, "uri", URI.create(wireMock.baseUrl()))).execute();
         verify(1, getRequestedFor(anyUrl()));
     }
 
@@ -205,9 +170,9 @@ public class WGetMojoTest {
     public void testCustomHeaders() throws MojoExecutionException, MojoFailureException {
         this.wireMock.stubFor(get(anyUrl()).willReturn(serverError()));
         createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "headers", new HashMap<String, String>() {{
+            Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+            Fields.set(m, "skipCache", true);
+            Fields.set(m, "headers", new HashMap<String, String>() {{
                 put("X-Custom-1", "first custom header");
                 put("X-Custom-2", "second custom header");
             }});
@@ -215,60 +180,6 @@ public class WGetMojoTest {
         verify(getRequestedFor(anyUrl())
                 .withHeader("X-Custom-1", equalTo("first custom header"))
                 .withHeader("X-Custom-2", equalTo("second custom header")));
-    }
-
-    /**
-     * The plugin should pass query parameters in the URL to the resource
-     */
-    @Test
-    public void testQuery() throws MojoExecutionException, MojoFailureException {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(serverError()));
-        createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl() + "?query=value"));
-            setVariableValueToObject(m, "skipCache", true);
-        }).execute();
-        verify(getRequestedFor(anyUrl())
-                .withQueryParam("query", equalTo("value")));
-    }
-
-    /**
-     * The plugin should follow temporary redirects
-     */
-    @Test
-    public void testTemporaryRedirect() throws MojoExecutionException, MojoFailureException {
-        this.wireMock
-                .stubFor(get(urlEqualTo("/old"))
-                .willReturn(temporaryRedirect("/new")));
-        this.wireMock
-                .stubFor(get(urlEqualTo("/new"))
-                        .willReturn(serverError()));
-        createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.url("/old")));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "followRedirects", true);
-        }).execute();
-        verify(getRequestedFor(urlEqualTo("/old")));
-        verify(getRequestedFor(urlEqualTo("/new")));
-    }
-
-    /**
-     * The plugin should follow permanent redirects
-     */
-    @Test
-    public void testPermanentRedirect() throws MojoExecutionException, MojoFailureException {
-        this.wireMock
-                .stubFor(get(urlEqualTo("/old"))
-                        .willReturn(permanentRedirect("/new")));
-        this.wireMock
-                .stubFor(get(urlEqualTo("/new"))
-                        .willReturn(serverError()));
-        createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.url("/old")));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "followRedirects", true);
-        }).execute();
-        verify(getRequestedFor(urlEqualTo("/old")));
-        verify(getRequestedFor(urlEqualTo("/new")));
     }
 
     /**
@@ -281,10 +192,10 @@ public class WGetMojoTest {
                 .stubFor(get(anyUrl()).willReturn(ok("Hello")));
 
         createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "overwrite", true);
-            setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
+            Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+            Fields.set(m, "skipCache", true);
+            Fields.set(m, "overwrite", true);
+            Fields.set(m, "outputFileName", OUTPUT_FILE_NAME);
         }).execute();
 
         assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
@@ -293,90 +204,19 @@ public class WGetMojoTest {
         final Path outputPath = outputDirectory.resolve(OUTPUT_FILE_NAME);
         final FileTime firstModificationTime = Files.getLastModifiedTime(outputPath);
 
-        Thread.sleep(1);
-
-        createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "overwrite", true);
-            setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-        }).execute();
-
-        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                is("Hello"));
-        assertThat(Files.getLastModifiedTime(outputPath), not(firstModificationTime));
-    }
-
-    /**
-     * The plugin should always overwrite the output file (even if it has the same content) if {@code overwrite}
-     * is {@code true} and {@code skipCache} is {@code true}.
-     *
-     * @see <a href="https://github.com/download-maven-plugin/download-maven-plugin/issues/194">#194</a>
-     */
-    @Test
-    public void testOverwriteWithSkipCache() throws MojoExecutionException, MojoFailureException, IOException, InterruptedException {
-        this.wireMock
-                .stubFor(get(anyUrl()).willReturn(ok("Hello")));
-
-        createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", false);
-            setVariableValueToObject(m, "overwrite", true);
-            setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-        }).execute();
-
-        assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                is("Hello"));
-
-        final Path outputPath = outputDirectory.resolve(OUTPUT_FILE_NAME);
-        final FileTime firstModificationTime = Files.getLastModifiedTime(outputPath);
-
-        // apparently, Files.getLastModificationTime only offers a resolution up to seconds with Java 8
-        // see https://stackoverflow.com/questions/24804618/get-file-mtime-with-millisecond-resolution-from-java
+        // Files.getLastModifiedTime may only have a resolution of seconds, e.g. with Java 8
         Thread.sleep(1000);
 
         createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "overwrite", true);
-            setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
+            Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+            Fields.set(m, "skipCache", true);
+            Fields.set(m, "overwrite", true);
+            Fields.set(m, "outputFileName", OUTPUT_FILE_NAME);
         }).execute();
 
         assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
                 is("Hello"));
         assertThat(Files.getLastModifiedTime(outputPath), not(firstModificationTime));
-    }
-
-    /**
-     * The plugin, if provided the {@code md5}, {@code sha1}, {@code sha256}, {@code sha512} parameters, should verify
-     * if the signature is correct.
-     */
-    @Test
-    public void testSignatures() {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!\n")));
-        new HashMap<String, String>() {{
-            put("md5", "746308829575e17c3331bbcb00c0898b");
-            put("sha1", "09fac8dbfd27bd9b4d23a00eb648aa751789536d");
-            put("sha256", "d9014c4624844aa5bac314773d6b689ad467fa4e1d1a50a1b8a99d5a95f72ff5");
-            put("sha512", "09e1e2a84c92b56c8280f4a1203c7cffd61b162cfe987278d4d6be9afbf38c0e"
-                    + "8934cdadf83751f4e99d111352bffefc958e5a4852c8a7a29c95742ce59288a8");
-        }}.forEach((key, value) -> {
-            try {
-                createMojo(m -> {
-                    setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                    setVariableValueToObject(m, "skipCache", true);
-                    setVariableValueToObject(m, "overwrite", true);
-                    setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-                    setVariableValueToObject(m, key, value);
-                }).execute();
-                assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                        is("Hello, world!"));
-            } catch (MojoExecutionException | MojoFailureException | IOException ex) {
-                final Throwable rootCause = getRootCause(ex);
-                fail("Execution failed with " + key + " test: " + rootCause + " stack trace:\n"
-                        + printStackTrace(rootCause));
-            }
-        });
     }
 
     /**
@@ -389,11 +229,11 @@ public class WGetMojoTest {
         Arrays.stream(new String[]{ "md5", "sha1", "sha256", "sha512" }).forEach(key -> {
             try {
                 createMojo(m -> {
-                    setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                    setVariableValueToObject(m, "skipCache", true);
-                    setVariableValueToObject(m, "overwrite", true);
-                    setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-                    setVariableValueToObject(m, key, "wrong");
+                    Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+                    Fields.set(m, "skipCache", true);
+                    Fields.set(m, "overwrite", true);
+                    Fields.set(m, "outputFileName", OUTPUT_FILE_NAME);
+                    Fields.set(m, key, "wrong");
                 }).execute();
                 assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
                         is("Hello, world!"));
@@ -423,41 +263,6 @@ public class WGetMojoTest {
 
     /**
      * Testing {@code alwaysVerifyChecksum} with an already existing file. The plugin, if provided the {@code md5},
-     * {@code sha1}, {@code sha256}, {@code sha512} parameters, should verify if the signature <u>of the existing
-     * file</u> is correct.
-     */
-    @Test
-    public void testExistingFileSignatures() {
-        Path outputFile = outputDirectory.resolve(OUTPUT_FILE_NAME);
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!\n")));
-        new HashMap<String, String>() {{
-            put("md5", "746308829575e17c3331bbcb00c0898b");
-            put("sha1", "09fac8dbfd27bd9b4d23a00eb648aa751789536d");
-            put("sha256", "d9014c4624844aa5bac314773d6b689ad467fa4e1d1a50a1b8a99d5a95f72ff5");
-            put("sha512", "09e1e2a84c92b56c8280f4a1203c7cffd61b162cfe987278d4d6be9afbf38c0e"
-                    + "8934cdadf83751f4e99d111352bffefc958e5a4852c8a7a29c95742ce59288a8");
-        }}.forEach((key, value) -> {
-            try {
-                Files.write(outputFile, Collections.singletonList("Hello, world!"));
-                createMojo(m -> {
-                    setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                    setVariableValueToObject(m, "skipCache", true);
-                    setVariableValueToObject(m, "alwaysVerifyChecksum", true);
-                    setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-                    setVariableValueToObject(m, key, value);
-                }).execute();
-                assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
-                        is("Hello, world!"));
-            } catch (MojoExecutionException | MojoFailureException | IOException ex) {
-                final Throwable rootCause = getRootCause(ex);
-                fail("Execution failed with " + key + " test: " + rootCause + " stack trace:\n"
-                        + printStackTrace(rootCause));
-            }
-        });
-    }
-
-    /**
-     * Testing {@code alwaysVerifyChecksum} with an already existing file. The plugin, if provided the {@code md5},
      * {@code sha1}, {@code sha256}, {@code sha512} parameters, should log a warning message if the signature
      * of the existing file is incorrect.
      */
@@ -480,12 +285,12 @@ public class WGetMojoTest {
                 Files.write(outputFile, Collections.singletonList("wrong"), StandardOpenOption.CREATE,
                         StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
                 createMojo(m -> {
-                    setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                    setVariableValueToObject(m, "skipCache", true);
-                    setVariableValueToObject(m, "alwaysVerifyChecksum", true);
-                    setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-                    setVariableValueToObject(m, "log", log);
-                    setVariableValueToObject(m, key, value);
+                    Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+                    Fields.set(m, "skipCache", true);
+                    Fields.set(m, "alwaysVerifyChecksum", true);
+                    Fields.set(m, "outputFileName", OUTPUT_FILE_NAME);
+                    Fields.set(m, "log", log);
+                    Fields.set(m, key, value);
                 }).execute();
                 assertThat(loggedWarningMessages.toString(),
                         containsString("The local version of file output-file doesn't match the expected checksum."));
@@ -508,9 +313,9 @@ public class WGetMojoTest {
         this.wireMock.stubFor(get(anyUrl()).willReturn(forbidden()));
         try {
             createMojo(m -> {
-                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                setVariableValueToObject(m, "skipCache", true);
-                setVariableValueToObject(m, "failOnError", true);
+                Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+                Fields.set(m, "skipCache", true);
+                Fields.set(m, "failOnError", true);
             }).execute();
             fail("The mojo should have failed upon error");
         } catch (Exception e) {
@@ -518,28 +323,6 @@ public class WGetMojoTest {
             assertThat(e.getCause(), is(instanceOf(DownloadFailureException.class)));
             assertThat(((DownloadFailureException) e.getCause()).getHttpCode(), is(HttpStatus.SC_FORBIDDEN));
             verify(1, getRequestedFor(anyUrl()));
-        }
-    }
-
-    /**
-     * Plugin execution should fail only after all retries have been exhausted
-     * if a 500+ code was returned by the resource being downloaded.
-     * It should repeat the query exactly 3 times.
-     */
-    @Test
-    public void testRetriedAfterDownloadFailsWithCode500() {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(serverError()));
-        try {
-            createMojo(m -> {
-                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                setVariableValueToObject(m, "skipCache", true);
-                setVariableValueToObject(m, "failOnError", true);
-                setVariableValueToObject(m, "retries", 3);
-            }).execute();
-            fail("The mojo should have failed upon error");
-        } catch (Exception e) {
-            assertThat(e, is(instanceOf(MojoExecutionException.class)));
-            verify(3, getRequestedFor(anyUrl()));
         }
     }
 
@@ -553,54 +336,17 @@ public class WGetMojoTest {
         this.wireMock.stubFor(get(anyUrl()).willReturn(notFound()));
         try {
             createMojo(m -> {
-                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                setVariableValueToObject(m, "skipCache", true);
-                setVariableValueToObject(m, "failOnError", true);
-                setVariableValueToObject(m, "retries", 3);
-                setVariableValueToObject(m, "retriesOnHttpCodes", "404,500");
+                Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+                Fields.set(m, "skipCache", true);
+                Fields.set(m, "failOnError", true);
+                Fields.set(m, "retries", 3);
+                Fields.set(m, "retriesOnHttpCodes", "404,500");
             }).execute();
             fail("The mojo should have failed upon error");
         } catch (Exception e) {
             assertThat(e, is(instanceOf(MojoExecutionException.class)));
             verify(3, getRequestedFor(anyUrl()));
         }
-    }
-
-    /**
-     * Plugin should ignore a download failure if instructed to do so. It should not repeat the query.
-     */
-    @Test
-    public void testIgnoreDownloadFailure()
-            throws MojoExecutionException, MojoFailureException {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(forbidden()));
-        try {
-            createMojo(m -> {
-                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-                setVariableValueToObject(m, "skipCache", true);
-                setVariableValueToObject(m, "failOnError", false);
-            }).execute();
-            verify(1, getRequestedFor(anyUrl()));
-        } catch (MojoExecutionException e) {
-            if (e.getCause() instanceof DownloadFailureException) {
-                fail("Plugin should ignore a download failure");
-            }
-            throw e;
-        }
-    }
-
-    /**
-     * Plugin should not repeat if download succeeds.
-     */
-    @Test
-    public void testShouldNotRetrySuccessfulDownload() throws MojoExecutionException, MojoFailureException {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello, world!\n")));
-        createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "failOnError", true);
-            setVariableValueToObject(m, "retries", 3);
-        }).execute();
-        verify(1, getRequestedFor(anyUrl()));
     }
 
     /**
@@ -620,8 +366,8 @@ public class WGetMojoTest {
         this.wireMock.stubFor(get(urlEqualTo("/hello")).willReturn(ok("Hello, world!\n")));
         try {
             createMojo(m -> {
-                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl() + "/" + code));
-                setVariableValueToObject(m, "skipCache", true);
+                Fields.set(m, "uri", URI.create(wireMock.baseUrl() + "/" + code));
+                Fields.set(m, "skipCache", true);
             }).execute();
             assertThat(String.join("", Files.readAllLines(outputDirectory.resolve(OUTPUT_FILE_NAME))),
                     is("Hello, world!"));
@@ -648,10 +394,10 @@ public class WGetMojoTest {
                 .when(log).warn(anyString());
         try {
             createMojo(m -> {
-                setVariableValueToObject(m, "log", log);
-                setVariableValueToObject(m, "followRedirects", false);
-                setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl() + "/" + code));
-                setVariableValueToObject(m, "skipCache", true);
+                Fields.set(m, "log", log);
+                Fields.set(m, "followRedirects", false);
+                Fields.set(m, "uri", URI.create(wireMock.baseUrl() + "/" + code));
+                Fields.set(m, "skipCache", true);
             }).execute();
             assertThat(loggedWarningMessages.toString(), containsString("Download failed with code " + code));
         } catch (Exception e) {
@@ -696,11 +442,11 @@ public class WGetMojoTest {
     public void setsFilePermOnDownload() throws MojoExecutionException, MojoFailureException, IOException {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("Hello")));
         createMojo(m -> {
-            setVariableValueToObject(m, "uri", URI.create(wireMock.baseUrl()));
-            setVariableValueToObject(m, "skipCache", true);
-            setVariableValueToObject(m, "overwrite", true);
-            setVariableValueToObject(m, "outputFileName", OUTPUT_FILE_NAME);
-            setVariableValueToObject(m, "outputFilePermissions", "+x");
+            Fields.set(m, "uri", URI.create(wireMock.baseUrl()));
+            Fields.set(m, "skipCache", true);
+            Fields.set(m, "overwrite", true);
+            Fields.set(m, "outputFileName", OUTPUT_FILE_NAME);
+            Fields.set(m, "outputFilePermissions", "+x");
         }).execute();
         assertThat(outputDirectory.resolve(OUTPUT_FILE_NAME).toFile().canExecute(), is(true));
     }

@@ -4,7 +4,6 @@ import io.github.download.maven.plugin.internal.cache.DownloadCache;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
 import java.io.File;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -99,7 +98,7 @@ public class DownloaderRedirectCacheTest {
         final Fetcher server = (uri, target) -> {
             requests.add(uri);
             final URI resolved = LATEST.equals(uri) ? latestTarget : uri;
-            Files.write(target.toPath(), ("content of " + resolved).getBytes(StandardCharsets.UTF_8));
+            TestFiles.write(target, "content of " + resolved);
         };
         new Downloader(server, (source, dir, name) -> { }, file -> { }, new FileLocks(), log)
             .download(
@@ -114,8 +113,6 @@ public class DownloaderRedirectCacheTest {
     }
 
     private String readOutput() throws Exception {
-        return new String(
-            Files.readAllBytes(new File(outputDirectory, OUTPUT_FILE_NAME).toPath()), StandardCharsets.UTF_8
-        );
+        return TestFiles.read(new File(outputDirectory, OUTPUT_FILE_NAME));
     }
 }

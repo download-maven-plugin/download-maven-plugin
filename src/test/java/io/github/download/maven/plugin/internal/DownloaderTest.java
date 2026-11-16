@@ -7,7 +7,6 @@ import java.io.File;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -19,7 +18,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
 import java.util.function.Consumer;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.plugin.logging.Log;
@@ -28,12 +26,13 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static io.github.download.maven.plugin.internal.TestFiles.read;
+import static io.github.download.maven.plugin.internal.TestFiles.write;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
@@ -94,6 +93,7 @@ public class DownloaderTest {
         download(r -> { });
         assertThat(read(output()), is("local"));
         assertThat(this.fetcher.requests, is(empty()));
+        assertThat(this.changed, contains(output()));
         verify(this.log).info("File already exists, skipping");
     }
 
@@ -112,6 +112,15 @@ public class DownloaderTest {
         download(r -> r.verifyExisting(true).checksums(md5("remote")));
         assertThat(read(output()), is("remote"));
         verify(this.log).warn(startsWith("The local version of file file.txt doesn't match"));
+    }
+
+    @Test
+    public void existingFileMatchingChecksumIsKept() throws Exception {
+        write(output(), "local");
+        download(r -> r.verifyExisting(true).checksums(md5("local")));
+        assertThat(read(output()), is("local"));
+        assertThat(this.fetcher.requests, is(empty()));
+        assertThat(this.changed, contains(output()));
     }
 
     // ---------------------------------------------------------------- cache
@@ -194,6 +203,14 @@ public class DownloaderTest {
         assertThat(error.getCause(), is(instanceOf(DownloadFailureException.class)));
     }
 
+    @Test
+    public void failedDownloadIsNotCached() {
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(500, "Server Error"));
+        assertThrows(DownloadException.class, () -> download(r -> r.cache(this.cache)));
+        assertThat(this.cache.getArtifact(URI_UNDER_TEST, new Checksums(null, null, null, null, this.log)),
+            is((File) null));
+    }
+
     /**
      * An ignored failure must not leave anything behind: nothing cached, nothing unpacked, no notification.
      */
@@ -236,19 +253,32 @@ public class DownloaderTest {
     }
 
     @Test
+    public void offlineUsesCachedFile() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "content");
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).offline(true));
+        assertThat(read(output()), is("content"));
+        assertThat(this.fetcher.requests.size(), is(1));
+    }
+
+    @Test
     public void lockedFileFailsDownload() throws Exception {
-        holdLock(() -> {
+        try (HeldLock ignored = HeldLock.on(this.locks.forFile(output()))) {
             final DownloadException error = assertThrows(
                 DownloadException.class, () -> download(r -> r.lockWaitMillis(10L))
             );
-            assertThat(error.getMessage(), startsWithText("Could not acquire lock for File"));
-        });
+            assertThat(error.getMessage(), org.hamcrest.Matchers.startsWith("Could not acquire lock for File"));
+        }
         assertThat(this.fetcher.requests, is(empty()));
     }
 
     @Test
     public void lockedFileOnlyWarnsIfFailuresAreIgnored() throws Exception {
-        holdLock(() -> download(r -> r.lockWaitMillis(10L).failOnError(false)));
+        try (HeldLock ignored = HeldLock.on(this.locks.forFile(output()))) {
+            download(r -> r.lockWaitMillis(10L).failOnError(false));
+        }
         verify(this.log).warn(startsWith("Could not acquire lock for File"));
         assertThat(this.fetcher.requests, is(empty()));
     }
@@ -263,6 +293,31 @@ public class DownloaderTest {
         assertThat(read(output()), is("content"));
         assertThat(this.fetcher.requests.size(), is(2));
         verify(this.log).info("Retrying (2 more)");
+    }
+
+    @Test
+    public void successfulDownloadIsNotRetried() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "content");
+        download(r -> r.retryPolicy(retries(3, null)));
+        assertThat(this.fetcher.requests.size(), is(1));
+    }
+
+    @Test
+    public void clientErrorIsNotRetriedByDefault() {
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(404, "Not Found"));
+        assertThrows(DownloadException.class, () -> download(r -> r.retryPolicy(retries(3, null))));
+        assertThat(this.fetcher.requests.size(), is(1));
+    }
+
+    @Test
+    public void ioFailureIsNotRetriedByDefault() {
+        this.fetcher.fail(URI_UNDER_TEST, new SocketTimeoutException("timed out"));
+        this.fetcher.serve(URI_UNDER_TEST, "content");
+        final DownloadException error = assertThrows(
+            DownloadException.class, () -> download(r -> r.retryPolicy(retries(3, null)))
+        );
+        assertThat(error.getCause(), is(instanceOf(SocketTimeoutException.class)));
+        assertThat(this.fetcher.requests.size(), is(1));
     }
 
     @Test
@@ -322,6 +377,17 @@ public class DownloaderTest {
         verify(this.log).info("Skipping unpacking as the file has not changed");
     }
 
+    @Test
+    public void unpackWinsOverUnpackWhenChanged() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "archive");
+        download(r -> r.cache(this.cache).unpack(true));
+        this.unpacker.sources.clear();
+
+        download(r -> r.cache(this.cache).unpack(true).unpackWhenChanged(true));
+        assertThat(this.unpacker.sources.size(), is(1));
+        verify(this.log).info("Unpacking even though unchanged cache file exists because unpack = true");
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private void download(final Consumer<DownloadRequest.Builder> customizer) throws Exception {
@@ -347,36 +413,6 @@ public class DownloaderTest {
         return new RetryPolicy(attempts, codes, Collections.emptyList(), Duration.ZERO, 1.0d, Duration.ZERO);
     }
 
-    /**
-     * Runs the action while another thread holds the lock of the output file.
-     */
-    private void holdLock(final ThrowingRunnable action) throws Exception {
-        final Lock lock = this.locks.forFile(output());
-        final CountDownLatch locked = new CountDownLatch(1);
-        final CountDownLatch done = new CountDownLatch(1);
-        final Thread holder = new Thread(() -> {
-            lock.lock();
-            try {
-                locked.countDown();
-                await(done);
-            } finally {
-                lock.unlock();
-            }
-        });
-        holder.start();
-        locked.await();
-        try {
-            action.run();
-        } finally {
-            done.countDown();
-            holder.join();
-        }
-    }
-
-    private static org.hamcrest.Matcher<String> startsWithText(final String prefix) {
-        return org.hamcrest.Matchers.startsWith(prefix);
-    }
-
     private static void await(final CountDownLatch latch) {
         try {
             assertThat("timed out waiting", latch.await(5, TimeUnit.SECONDS), is(true));
@@ -392,15 +428,6 @@ public class DownloaderTest {
         } catch (final Exception ex) {
             throw new IllegalStateException(ex);
         }
-    }
-
-    private static String read(final File file) throws IOException {
-        assertThat(file, is(notNullValue()));
-        return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-    }
-
-    private static void write(final File file, final String content) throws IOException {
-        Files.write(file.toPath(), content.getBytes(StandardCharsets.UTF_8));
     }
 
     @FunctionalInterface
