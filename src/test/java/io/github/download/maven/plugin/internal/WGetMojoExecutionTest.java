@@ -1,14 +1,17 @@
 package io.github.download.maven.plugin.internal;
 
+import com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import java.io.File;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
+import java.util.Random;
 import java.util.function.Consumer;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.artifact.repository.ArtifactRepository;
@@ -235,6 +238,66 @@ public class WGetMojoExecutionTest {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
         createMojo(m -> set(m, "skipCache", true)).execute();
         assertThat(this.cacheDirectory.toFile().list(), is(emptyArray()));
+    }
+
+    @Test
+    public void missingCacheDirectoryIsCreated() throws Exception {
+        final File missing = this.cacheDirectory.resolve("a/b").toFile();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        createMojo(m -> set(m, "cacheDirectory", missing)).execute();
+        assertThat(read(output()), is("content"));
+        assertThat(missing.isDirectory(), is(true));
+    }
+
+    // ---------------------------------------------------------------- caching
+
+    @Test
+    public void largeFileIsServedFromCache() throws Exception {
+        final byte[] large = WGetMojoExecutionTest.randomBytes();
+        assertServedFromCache(ok().withBody(large));
+        assertThat(Files.readAllBytes(output()), is(large));
+    }
+
+    /**
+     * The cache stores what the plugin downloaded, whatever the server says about caching it.
+     */
+    @Test
+    public void responseNotMeantForCachingIsCached() throws Exception {
+        assertServedFromCache(ok("content").withHeader("Cache-Control", "no-store").withHeader("Vary", "*"));
+        assertThat(read(output()), is("content"));
+    }
+
+    /**
+     * A new version of the same size differs only in its content, which must be compared in full.
+     */
+    @Test
+    public void updatePolicyAlwaysReplacesLargeFileOfSameSize() throws Exception {
+        final byte[] first = WGetMojoExecutionTest.randomBytes();
+        final byte[] second = first.clone();
+        second[second.length - 1] ^= 1;
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(first)));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(second)));
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        assertThat(Files.readAllBytes(output()), is(second));
+        cleanOutputDirectory();
+        createMojo(m -> { }).execute();
+        assertThat(Files.readAllBytes(output()), is(second));
+        verify(this.log).info("Cached file was outdated: downloaded the current version");
+    }
+
+    @Test
+    public void updatePolicyAlwaysKeepsUnchangedLargeFile() throws Exception {
+        final byte[] large = WGetMojoExecutionTest.randomBytes();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(large)));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        assertThat(Files.readAllBytes(output()), is(large));
+        verify(this.log).info("Cached file is up to date: the server sent the same content");
     }
 
     // ---------------------------------------------------------------- request and output configuration
@@ -615,6 +678,28 @@ public class WGetMojoExecutionTest {
         this.wireMock.stubFor(get(anyUrl()).inScenario("slow")
             .whenScenarioStateIs("fast")
             .willReturn(ok("fast")));
+    }
+
+    /**
+     * Downloads twice: the first answer is cached, so the second download is served from the cache
+     * although the server would answer differently.
+     * @param first First answer of the server
+     * @throws Exception If a download fails
+     */
+    private void assertServedFromCache(final ResponseDefinitionBuilder first) throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(first));
+        createMojo(m -> { }).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("changed")));
+        cleanOutputDirectory();
+
+        createMojo(m -> { }).execute();
+        this.wireMock.verify(1, getRequestedFor(anyUrl()));
+    }
+
+    private static byte[] randomBytes() {
+        final byte[] bytes = new byte[8 * 1024 * 1024];
+        new Random(42).nextBytes(bytes);
+        return bytes;
     }
 
     private void cleanOutputDirectory() throws Exception {
