@@ -1,6 +1,7 @@
 package io.github.download.maven.plugin.internal;
 
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
+import io.github.download.maven.plugin.internal.cache.Validators;
 import java.io.File;
 import java.net.URI;
 import java.util.Collections;
@@ -12,6 +13,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
@@ -57,7 +59,7 @@ public class HttpFetcherTest {
     public void explicitCredentialsTakePrecedenceOverEnvironment() throws Exception {
         requireBasicAuth("explicit", "secret");
         this.environment.credentials = new UserCredentials("environment", "other");
-        fetcher(new UserCredentials("explicit", "secret"), null).fetch(uri(), this.target);
+        fetcher(new UserCredentials("explicit", "secret"), null).fetch(uri(), this.target, Validators.NONE);
         assertThat(read(this.target), is("secured"));
     }
 
@@ -65,7 +67,7 @@ public class HttpFetcherTest {
     public void environmentCredentialsAreUsedWithoutExplicitOnes() throws Exception {
         requireBasicAuth("environment", "secret");
         this.environment.credentials = new UserCredentials("environment", "secret");
-        fetcher(null, "my-server").fetch(uri(), this.target);
+        fetcher(null, "my-server").fetch(uri(), this.target, Validators.NONE);
         assertThat(read(this.target), is("secured"));
         assertThat(this.environment.serverId, is("my-server"));
     }
@@ -74,7 +76,7 @@ public class HttpFetcherTest {
     public void environmentFailureIsReported() {
         this.environment.failure = new EnvironmentException("Server my-server not found");
         final EnvironmentException error = assertThrows(
-            EnvironmentException.class, () -> fetcher(null, "my-server").fetch(uri(), this.target)
+            EnvironmentException.class, () -> fetcher(null, "my-server").fetch(uri(), this.target, Validators.NONE)
         );
         assertThat(error.getMessage(), is("Server my-server not found"));
         this.wireMock.verify(0, getRequestedFor(anyUrl()));
@@ -84,8 +86,8 @@ public class HttpFetcherTest {
     public void environmentIsResolvedOnceAcrossFetches() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
         final HttpFetcher fetcher = fetcher(null, null);
-        fetcher.fetch(uri(), this.target);
-        fetcher.fetch(uri(), this.target);
+        fetcher.fetch(uri(), this.target, Validators.NONE);
+        fetcher.fetch(uri(), this.target, Validators.NONE);
         assertThat(this.environment.resolutions, is(1));
         this.wireMock.verify(2, getRequestedFor(anyUrl()));
     }
@@ -94,7 +96,7 @@ public class HttpFetcherTest {
     public void usesProxyFromEnvironment() throws Exception {
         this.wireMock.stubFor(get(urlEqualTo("/file")).willReturn(ok("via proxy")));
         this.environment.proxy = new ProxySettings("localhost", this.wireMock.port());
-        fetcher(null, null).fetch(URI.create("http://target.invalid/file"), this.target);
+        fetcher(null, null).fetch(URI.create("http://target.invalid/file"), this.target, Validators.NONE);
         assertThat(read(this.target), is("via proxy"));
     }
 
@@ -104,7 +106,7 @@ public class HttpFetcherTest {
         new HttpFetcher(
             this.environment, new HttpFileRequester.Builder(), null, null,
             Collections.singletonList(new BasicHeader("X-Custom", "value")), this.log
-        ).fetch(uri(), this.target);
+        ).fetch(uri(), this.target, Validators.NONE);
         this.wireMock.verify(getRequestedFor(anyUrl()).withHeader("X-Custom", equalTo("value")));
     }
 
@@ -112,15 +114,54 @@ public class HttpFetcherTest {
     public void reportsProgressIfEnvironmentAsksForIt() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
         this.environment.progress = true;
-        fetcher(null, null).fetch(uri(), this.target);
+        fetcher(null, null).fetch(uri(), this.target, Validators.NONE);
         verify(this.log).info("Downloading: " + uri());
     }
 
     @Test
     public void doesNotReportProgressOtherwise() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        fetcher(null, null).fetch(uri(), this.target);
+        fetcher(null, null).fetch(uri(), this.target, Validators.NONE);
         verify(this.log, never()).info(startsWith("Downloading: "));
+    }
+
+    @Test
+    public void knownValidatorsAreSentAsConditionalHeaders() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        fetcher(null, null).fetch(uri(), this.target, new Validators("\"abc\"", "Sat, 01 Jan 2000 00:00:00 GMT"));
+        this.wireMock.verify(
+            getRequestedFor(urlEqualTo("/file"))
+                .withHeader("If-None-Match", equalTo("\"abc\""))
+                .withHeader("If-Modified-Since", equalTo("Sat, 01 Jan 2000 00:00:00 GMT"))
+        );
+    }
+
+    @Test
+    public void noConditionalHeadersWithoutValidators() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        fetcher(null, null).fetch(uri(), this.target, Validators.NONE);
+        this.wireMock.verify(
+            getRequestedFor(urlEqualTo("/file")).withoutHeader("If-None-Match").withoutHeader("If-Modified-Since")
+        );
+    }
+
+    @Test
+    public void conditionalHeaderConfiguredOnPluginWins() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        new HttpFetcher(
+            this.environment, new HttpFileRequester.Builder(), null, null,
+            Collections.singletonList(new BasicHeader("if-none-match", "\"mine\"")), this.log
+        ).fetch(uri(), this.target, new Validators("\"abc\"", "Sat, 01 Jan 2000 00:00:00 GMT"));
+        this.wireMock.verify(
+            getRequestedFor(urlEqualTo("/file"))
+                .withHeader("If-None-Match", equalTo("\"mine\""))
+                .withHeader("If-Modified-Since", equalTo("Sat, 01 Jan 2000 00:00:00 GMT"))
+        );
+        assertThat(
+            this.wireMock.findAll(getRequestedFor(urlEqualTo("/file"))).get(0).getHeaders()
+                .getHeader("If-None-Match").values().size(),
+            is(1)
+        );
     }
 
     private HttpFetcher fetcher(final UserCredentials explicit, final String serverId) {

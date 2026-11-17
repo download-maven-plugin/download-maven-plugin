@@ -1,0 +1,94 @@
+# Real-world download links exercised by LiveLinksTest.
+#
+# Format: category | name | outputFileName | approxMb | options | url
+#
+#   category        hosting pattern, see README.md
+#   outputFileName  "-" lets the plugin derive the name from the URL
+#   approxMb        size when the link was surveyed; only used by -Dlive.maxMb
+#   options         "-" or a comma-separated list of:
+#                     unpack            also unpack the downloaded archive
+#                     revalidates       the server answers 304 Not Modified to a conditional request,
+#                                       so updatePolicy=always must not download the file again
+#                     sha256=<hex>      checksum the plugin must verify (immutable files only)
+#                     header:<k>=<v>    request header to send
+#
+A | Maven Central artifact | - | 1 | revalidates,sha256=7b96bf3ee68949abb5bc465559ac270e0551596fa34523fddf890ec418dde13c | https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar
+A | Artifactory artifact (jenkins) | - | 87 | revalidates,sha256=736b1917be2c2844f430e0c1f66150f9b7fbb5ce0e9c428db6ea3198f8f71e31 | https://repo.jenkins-ci.org/releases/org/jenkins-ci/main/jenkins-war/2.440/jenkins-war-2.440.war
+A | Apache CDN direct | - | 9 | unpack,revalidates,sha256=5af3b743dd8b876b5c45da33b676251e5f1687712644abb4ee519ca56e1d89ce | https://dlcdn.apache.org/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip
+A | Apache archive (httpd) | - | 9 | unpack,revalidates,sha256=4ec3f26fb1a692473aea0235c300bd20f0f9fe741947c82c1234cefd76ac3a3c | https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip
+A | GNU ftp (httpd) | - | 1 | unpack,revalidates,sha256=cf04af86dc085268c5f4470fbae49b18afbc221b78096aab842d934a76bad0ab | https://ftp.gnu.org/gnu/hello/hello-2.12.tar.gz
+A | nginx.org download (nginx) | - | 1 | unpack,revalidates,sha256=d2e6c8439d6c6db5015d8eaab2470ab52aef85a7bf363182879977e084370497 | https://nginx.org/download/nginx-1.26.0.tar.gz
+A | kernel.org tarball | - | 140 | revalidates,sha256=d926a06c63dd8ac7df3f86ee1ffc2ce2a3b81a2d168484e76b5b389aba8e56d0 | https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz
+A | python.org ftp | - | 27 | unpack,revalidates,sha256=51412956d24a1ef7c97f1cb5f70e185c13e3de1f50d131c0aac6338080687afb | https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz
+A | HashiCorp releases | - | 27 | unpack,revalidates,sha256=dcc4670379a22213e72faa6cb709b3391e7e54967e40288ecf591e2b83cfd39e | https://releases.hashicorp.com/terraform/1.8.0/terraform_1.8.0_linux_amd64.zip
+A | Helm (Azure CDN) | - | 17 | unpack,revalidates,sha256=a74747ac40777b86d3ff6f1be201504bba65ca46cd68b5fe25d3c394d0dcf745 | https://get.helm.sh/helm-v3.15.0-linux-amd64.tar.gz
+A | Kubernetes binary | - | 51 | revalidates,sha256=7c3807c0f5c1b30110a2ff1e55da1d112a6d0096201f1beb81b269f582b5d1c5 | https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
+A | Elastic artifacts | - | 574 | revalidates,sha256=4224e0f49771d3b7482054c56a60f8660315d339f325173c05e44e9a3c187fb0 | https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-8.13.0-linux-x86_64.tar.gz
+A | npm tarball | - | 0 | unpack,revalidates,sha256=870c0fe1096223a58d4f8832d08a7e651ea2fcadb8e6877b2fdc26b662d481dd | https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz
+A | RubyGems gem | - | 0 | revalidates,sha256=5ce4bf5037b4196c24ac62834d8db1ce175470391026bd9e557d669beeb19097 | https://rubygems.org/downloads/rake-13.0.6.gem
+A | GCS object (kubectl) | - | 52 | revalidates,sha256=7c3807c0f5c1b30110a2ff1e55da1d112a6d0096201f1beb81b269f582b5d1c5 | https://storage.googleapis.com/kubernetes-release/release/v1.30.0/bin/linux/amd64/kubectl
+A | Nexus 2 artifact (apache) | - | 0 | revalidates,sha256=29601f5f2147926c6dd5b2dc873f446fc97030569d885f398c98d85f64d727fb | https://repository.apache.org/content/repositories/releases/org/apache/maven/maven-core/3.9.6/maven-core-3.9.6.pom
+A | Nexus 3 artifact (eclipse) | - | 0 | revalidates,sha256=7798d3475484fbcf0e6403a51137801cf11ecb60918b6fafb72211522539130b | https://repo.eclipse.org/content/repositories/releases/org/eclipse/jgit/org.eclipse.jgit/6.9.0.202403050737-r/org.eclipse.jgit-6.9.0.202403050737-r.pom
+A | Nexus 3 artifact (jboss) | - | 0 | revalidates,sha256=04dff075a00094b63061af407d2816d9cde66795acae376a054bdfe8ba31e664 | https://repository.jboss.org/nexus/content/groups/public/org/jboss/jboss-parent/39/jboss-parent-39.pom
+B | GitHub release pinned tag | - | 2 | revalidates,sha256=5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5 | https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+B | GitHub tag archive | - | 0 | unpack,revalidates | https://github.com/jqlang/jq/archive/refs/tags/jq-1.7.1.tar.gz
+B | Go pinned (go.dev) | - | 69 | unpack,revalidates,sha256=f6c8a87aa03b92c4b0bf3d558e28ea03006eb29db78917daec5cfb6ec1046265 | https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+B | Gradle distribution | - | 134 | unpack,revalidates,sha256=544c35d6bd849ae8a5ed0bcea39ba677dc40f49df7d1835561582da2009b961d | https://services.gradle.org/distributions/gradle-8.7-bin.zip
+B | PyPI file | - | 2 | sha256=ba0d021a166865d2265246961bec0152ff124de910c5cc39f1156ce3fa7c69dc | https://files.pythonhosted.org/packages/py3/p/pip/pip-24.0-py3-none-any.whl
+B | crates.io download | serde-1.0.200.crate | 0 | revalidates,sha256=ddc6f9cc94d67c0e21aaf7eda3a010fd3af78ebf6e096aa6e2e13c79749cce4f | https://crates.io/api/v1/crates/serde/1.0.200/download
+C | GitHub branch archive | - | 0 | unpack,revalidates | https://github.com/jqlang/jq/archive/refs/heads/master.zip
+C | GitHub raw file on branch | - | 0 | revalidates | https://raw.githubusercontent.com/jqlang/jq/master/README.md
+C | GitHub Pages JSON (chrome-for-testing) | - | 0 | revalidates | https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json
+C | AWS CLI stable URL (S3/CloudFront) | - | 75 | unpack,revalidates | https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+C | GitLab runner latest (S3) | - | 142 | revalidates | https://gitlab-runner-downloads.s3.amazonaws.com/latest/binaries/gitlab-runner-linux-amd64
+C | Chrome stable URL (Google) | - | 147 | revalidates | https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+C | Docker Desktop stable URL (CloudFront) | - | 493 | revalidates | https://desktop.docker.com/linux/main/amd64/docker-desktop-amd64.deb
+C | get.docker.com script | get-docker.sh | 0 | revalidates | https://get.docker.com/
+C | Miniconda latest (Cloudflare) | - | 223 | revalidates | https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+C | rustup-init (static.rust-lang.org) | - | 21 | revalidates | https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+C | Rust channel manifest | - | 1 | revalidates | https://static.rust-lang.org/dist/channel-rust-stable.toml
+C | nuget.exe latest | - | 9 | revalidates | https://dist.nuget.org/win-x86-commandline/latest/nuget.exe
+C | Kubernetes stable.txt (dl.k8s.io) | - | 0 | revalidates | https://dl.k8s.io/release/stable.txt
+C | Kubernetes stable.txt (GCS direct) | - | 0 | revalidates | https://storage.googleapis.com/kubernetes-release/release/stable.txt
+C | Flutter releases JSON (GCS) | - | 0 | revalidates | https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json
+C | Node latest SHASUMS | - | 0 | revalidates | https://nodejs.org/dist/latest/SHASUMS256.txt
+C | Maven Central metadata | - | 0 | revalidates | https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/maven-metadata.xml
+C | Nexus2 snapshot metadata (apache) | - | 0 | revalidates | https://repository.apache.org/content/repositories/snapshots/org/apache/maven/maven-core/maven-metadata.xml
+C | Artifactory metadata (jenkins) | - | 0 | revalidates | https://repo.jenkins-ci.org/releases/org/jenkins-ci/main/jenkins-war/maven-metadata.xml
+C | Artifactory metadata (spring) | - | 0 | revalidates | https://repo.spring.io/milestone/org/springframework/spring-core/maven-metadata.xml
+C | Nexus3 metadata (eclipse) | - | 0 | - | https://repo.eclipse.org/content/repositories/releases/org/eclipse/jgit/org.eclipse.jgit/maven-metadata.xml
+C | JBoss Nexus metadata | - | 0 | - | https://repository.jboss.org/nexus/content/groups/public/org/jboss/jboss-parent/maven-metadata.xml
+C | Go proxy @latest | errors-latest.json | 0 | - | https://proxy.golang.org/github.com/pkg/errors/@latest
+C | Debian Release file (Fastly) | - | 0 | revalidates | https://deb.debian.org/debian/dists/stable/Release
+C | kernel.org releases.json (nginx) | - | 0 | revalidates | https://www.kernel.org/releases.json
+C | Apache KEYS file (httpd) | - | 0 | revalidates | https://downloads.apache.org/maven/KEYS
+C | GitLab branch archive | - | 0 | unpack,revalidates | https://gitlab.com/gitlab-org/cli/-/archive/main/cli-main.tar.gz
+C | Bitbucket branch archive | - | 1 | unpack | https://bitbucket.org/snakeyaml/snakeyaml/get/master.zip
+C | Spring Initializr generated zip | - | 0 | unpack,revalidates | https://start.spring.io/starter.zip
+C | HuggingFace small file on branch | - | 0 | revalidates | https://huggingface.co/openai-community/gpt2/resolve/main/config.json
+C | Codeberg branch archive | - | 7 | unpack | https://codeberg.org/Codeberg/Documentation/archive/main.tar.gz
+C | Artifactory metadata (jfrog) | - | 0 | revalidates | https://releases.jfrog.io/artifactory/oss-release-local/org/jfrog/buildinfo/build-info-extractor/maven-metadata.xml
+D | Azul latest API | zulu-jre.zip | 59 | unpack,revalidates | https://api.azul.com/zulu/download/community/v1.0/bundles/latest/binary/?java_version=25&os=windows&arch=x86&hw_bitness=64&ext=zip&bundle_type=jre&javafx=false&release_status=ga
+D | VS Code update API latest | vscode.tar.gz | 409 | revalidates | https://update.code.visualstudio.com/latest/linux-x64/stable
+D | Mozilla bouncer firefox-latest | firefox.tar.xz | 91 | revalidates | https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US
+D | Amazon Corretto latest | - | 209 | revalidates | https://corretto.aws/downloads/latest/amazon-corretto-21-x64-linux-jdk.tar.gz
+D | Oracle JDK latest | - | 217 | revalidates | https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.tar.gz
+D | .NET aka.ms latest SDK | - | 217 | revalidates | https://aka.ms/dotnet/8.0/dotnet-sdk-linux-x64.tar.gz
+D | aka.ms azcopy latest (Azure Blob) | azcopy.tar.gz | 30 | unpack,revalidates | https://aka.ms/downloadazcopy-v10-linux
+D | Microsoft aka.ms vc_redist | - | 26 | revalidates | https://aka.ms/vs/17/release/vc_redist.x64.exe
+D | NuGet package latest (v2 API) | newtonsoft.json.nupkg | 2 | revalidates | https://www.nuget.org/api/v2/package/Newtonsoft.Json
+D | Jenkins plugin latest | - | 1 | revalidates | https://updates.jenkins.io/latest/git.hpi
+D | JFrog Artifactory [RELEASE] token | - | 72 | revalidates | https://releases.jfrog.io/artifactory/jfrog-cli/v2-jf/%5BRELEASE%5D/jfrog-cli-linux-amd64/jf
+D | Nexus2 REST redirect v=LATEST | maven-core.pom | 0 | revalidates | https://repository.apache.org/service/local/artifact/maven/redirect?r=snapshots&g=org.apache.maven&a=maven-core&v=LATEST&e=pom
+E | GitHub releases/latest/download | - | 2 | revalidates | https://github.com/jqlang/jq/releases/latest/download/jq-linux-amd64
+E | GitHub API asset (octet-stream) | jq-linux-amd64 | 2 | revalidates,header:Accept=application/octet-stream | https://api.github.com/repos/jqlang/jq/releases/assets/453012752
+E | Adoptium API latest | temurin-jdk.tar.gz | 208 | revalidates | https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse
+E | JetBrains latest | idea.tar.gz | 1515 | revalidates | https://download.jetbrains.com/product?code=IIC&latest&distribution=linux
+E | HuggingFace LFS file (signed CDN) | - | 548 | - | https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors
+F | Jenkins mirrorbits latest war | - | 54 | revalidates | https://get.jenkins.io/war-stable/latest/jenkins.war
+F | Jenkins update-center.json | - | 3 | revalidates | https://updates.jenkins.io/update-center.json
+F | SourceForge latest/download | sevenzip-latest.bin | 2 | revalidates | https://sourceforge.net/projects/sevenzip/files/latest/download
+F | Eclipse download.php mirror | eclipse-inst.tar.gz | 111 | unpack | https://www.eclipse.org/downloads/download.php?file=/oomph/epp/2024-06/R/eclipse-inst-jre-linux64.tar.gz&r=1
+F | Apache closer.lua mirror | apache-maven-bin.zip | 9 | unpack,revalidates | https://www.apache.org/dyn/closer.lua/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.zip?action=download
+F | Fedora mirror redirector | - | 0 | revalidates | https://download.fedoraproject.org/pub/fedora/linux/releases/41/Everything/x86_64/os/repodata/repomd.xml
+F | CTAN mirror redirector | - | 0 | unpack | https://mirrors.ctan.org/macros/latex/contrib/geometry.zip

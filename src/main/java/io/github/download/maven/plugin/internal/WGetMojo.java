@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -235,6 +236,23 @@ public final class WGetMojo extends AbstractMojo {
      */
     @Parameter(property = "download.cache.directory")
     private File cacheDirectory;
+
+    /**
+     * When to check the server for a newer version of a file that is in the download cache.
+     * <ul>
+     *   <li>{@code never}: a cached file is used as is, without contacting the server.</li>
+     *   <li>{@code always}: the server is asked whether the cached file is still current, with
+     *   a conditional request ({@code If-None-Match} / {@code If-Modified-Since}), and a newer
+     *   version is downloaded. Use it for URLs whose content changes, e.g. "latest" links.
+     *   If the server can't be reached, the cached file is used and a warning is logged.</li>
+     * </ul>
+     * The check is not made in offline mode, nor when a checksum ({@code md5}, {@code sha1},
+     * {@code sha256}, {@code sha512}) is configured, as the checksum already pins the content.
+     * An existing output file is left alone unless {@code overwrite} is set, whatever the policy.
+     * @since 2.2.0
+     */
+    @Parameter(property = "download.cache.updatePolicy", defaultValue = "never")
+    private String updatePolicy;
 
     /**
      * Flag to determine whether to fail on an unsuccessful download.
@@ -472,6 +490,7 @@ public final class WGetMojo extends AbstractMojo {
         if (this.retries < 1) {
             throw new MojoFailureException("retries must be at least 1");
         }
+        final boolean revalidate = this.revalidate();
         final DownloadCache cache = this.cache(environment);
         this.adjustOutputDirectory();
         if (this.outputDirectory.exists() && !this.outputDirectory.isDirectory()) {
@@ -495,6 +514,7 @@ public final class WGetMojo extends AbstractMojo {
             .unpackWhenChanged(this.unpackWhenChanged)
             .failOnError(this.failOnError)
             .offline(environment.isOffline())
+            .revalidate(revalidate)
             .lockWaitMillis(this.maxLockWaitTime)
             .permissions(this.outputFilePermissions)
             .retryPolicy(this.retryPolicy())
@@ -516,6 +536,26 @@ public final class WGetMojo extends AbstractMojo {
         } catch (final RuntimeException exc) {
             throw new MojoExecutionException("General error: ", exc);
         }
+    }
+
+    /**
+     * Whether cached files are checked against the server, as configured by {@code updatePolicy}.
+     * @return True for {@code always}, false for {@code never} or if not configured.
+     * @throws MojoFailureException If {@code updatePolicy} has an unknown value.
+     */
+    private boolean revalidate() throws MojoFailureException {
+        final String policy;
+        if (this.updatePolicy == null) {
+            policy = "never";
+        } else {
+            policy = this.updatePolicy.trim().toLowerCase(Locale.ROOT);
+        }
+        if (!"never".equals(policy) && !"always".equals(policy)) {
+            throw new MojoFailureException(
+                String.format("updatePolicy must be 'never' or 'always', but was '%s'", this.updatePolicy)
+            );
+        }
+        return "always".equals(policy);
     }
 
     /**

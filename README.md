@@ -55,6 +55,28 @@ You can also run it without a pom.xml i.e.
 
 `mvn -Ddownload.url=https://example.com -Ddownload.outputDirectory=. -Ddownload.outputFileName=example.html io.github.download-maven-plugin:download-maven-plugin:<LATEST_VERSION>:wget`
 
+### Files that change behind the same URL
+
+By default a file that is in the cache is never downloaded again. That is right for versioned URLs,
+but not for URLs whose content changes, such as `.../releases/latest/download/tool.zip`.
+For those, set `updatePolicy` to `always`:
+
+```xml
+<configuration>
+	<url>https://github.com/example/tool/releases/latest/download/tool.zip</url>
+	<updatePolicy>always</updatePolicy>
+</configuration>
+```
+
+The plugin then asks the server whether the cached file is still current, with a conditional request
+(`If-None-Match` / `If-Modified-Since`). The file is only downloaded again if it has changed.
+
+* If the server can't be reached, the cached file is used and a warning is logged.
+* No request is made in offline mode, or when a checksum (`md5`, `sha1`, `sha256`, `sha512`) is configured,
+  because the checksum already pins the content.
+* An existing output file is still left alone unless `overwrite` is set.
+* `unpackWhenChanged` unpacks again only if the content has really changed.
+
 ## Requirements
 
 Java 8 or greater

@@ -18,13 +18,17 @@ import java.util.Base64;
 import java.net.URI;
 import java.nio.file.Files;
 import java.util.List;
+import io.github.download.maven.plugin.internal.cache.Validators;
+import org.apache.http.message.BasicHeader;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static java.util.Collections.emptyList;
+import static java.util.Collections.singletonList;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.fail;
 import static org.junit.Assert.assertThrows;
 import static org.hamcrest.Matchers.containsString;
@@ -367,5 +371,72 @@ public class HttpFileRequesterTest {
             assertThat("redirect " + code, String.join("", Files.readAllLines(this.outputFile.toPath())),
                     is("Hello, redirect!"));
         }
+    }
+
+    @Test
+    public void testValidatorsOfDownloadedFileAreReturned() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(
+            ok().withBody("Hello, world!")
+                .withHeader("ETag", "\"abc\"")
+                .withHeader("Last-Modified", "Sat, 01 Jan 2000 00:00:00 GMT")));
+
+        final Fetched fetched = createFileRequesterBuilder().build().download(this.outputFile, emptyList());
+
+        assertThat(fetched.isNotModified(), is(false));
+        // the server marks the ETag of a compressed response, e.g. "abc--gzip": it is opaque to the client
+        assertThat(fetched.validators().etag().get(), startsWith("\"abc"));
+        assertThat(fetched.validators().lastModified().get(), is("Sat, 01 Jan 2000 00:00:00 GMT"));
+    }
+
+    @Test
+    public void testNoValidatorsIfServerSendsNone() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody("Hello, world!")));
+
+        final Fetched fetched = createFileRequesterBuilder().build().download(this.outputFile, emptyList());
+
+        assertThat(fetched.validators(), is(Validators.NONE));
+    }
+
+    @Test
+    public void testNotModifiedIsReportedAndWritesNoFile() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody("Hello, world!")));
+        this.wireMock.stubFor(get(anyUrl())
+            .withHeader("If-None-Match", equalTo("\"abc\""))
+            .willReturn(aResponse().withStatus(304)));
+
+        final Fetched fetched = createFileRequesterBuilder().build().download(
+            this.outputFile, singletonList(new BasicHeader("If-None-Match", "\"abc\""))
+        );
+
+        assertThat(fetched.isNotModified(), is(true));
+        assertThat(this.outputFile.exists(), is(false));
+    }
+
+    /**
+     * A "latest" URL redirects to the current file: the conditional headers must reach
+     * the server that knows the file, and the validators must be the ones of the file.
+     */
+    @Test
+    public void testConditionalHeadersAndValidatorsCrossRedirects() throws Exception {
+        this.wireMock.stubFor(get(urlEqualTo("/latest")).willReturn(temporaryRedirect("/v2")));
+        this.wireMock.stubFor(get(urlEqualTo("/v2")).willReturn(ok().withBody("v2").withHeader("ETag", "\"v2\"")));
+        this.wireMock.stubFor(get(urlEqualTo("/v2"))
+            .withHeader("If-None-Match", matching("\"v2.*"))
+            .willReturn(aResponse().withStatus(304)));
+        final HttpFileRequester requester = createFileRequesterBuilder()
+            .withUri(new URI("http://localhost:" + this.wireMock.port() + "/latest"))
+            .withRedirectsEnabled(true)
+            .build();
+
+        final Validators current = requester
+            .download(this.outputFile, singletonList(new BasicHeader("If-None-Match", "\"v1\"")))
+            .validators();
+        assertThat(current.etag().get(), startsWith("\"v2"));
+        assertThat(
+            requester
+                .download(this.outputFile, singletonList(new BasicHeader("If-None-Match", current.etag().get())))
+                .isNotModified(),
+            is(true)
+        );
     }
 }

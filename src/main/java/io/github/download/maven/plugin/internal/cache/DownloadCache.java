@@ -18,18 +18,44 @@ package io.github.download.maven.plugin.internal.cache;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Optional;
+import java.util.Properties;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.plugin.logging.Log;
+import org.apache.maven.shared.utils.io.FileUtils;
 
 /**
  * A class representing a download cache.
  * @author Mickael Istria (Red Hat Inc)
  */
 public final class DownloadCache {
+
+    /**
+     * Suffix of the file holding the validators of a cached file.
+     */
+    private static final String META_SUFFIX = ".meta";
+
+    /**
+     * Key of the {@code ETag} value in a meta file.
+     */
+    private static final String META_ETAG = "etag";
+
+    /**
+     * Key of the {@code Last-Modified} value in a meta file.
+     */
+    private static final String META_LAST_MODIFIED = "last-modified";
+
+    /**
+     * Key of the size of the cached file the validators belong to.
+     */
+    private static final String META_SIZE = "size";
 
     /**
      * Directory where the download cache is stored.
@@ -56,7 +82,6 @@ public final class DownloadCache {
     /**
      * Get a File in the download cache. If no cache for this URL, or
      * if expected checksums don't match cached ones, returns null.
-     * available in cache,
      * @param uri URL of the file
      * @param checksums Supplied checksums.
      * @return A File when cache is found, null if no available cache
@@ -77,6 +102,7 @@ public final class DownloadCache {
      * If the cache directory does not exist, it is created.
      * The method checks if the file corresponding to the URI and checksums already exists in the
      * cache. If not, the file is copied to the cache directory and the index is updated.
+     * Unlike {@link #store}, an existing entry is never replaced and no validators are recorded.
      *
      * @param uri The URI of the file to be installed.
      * @param outputFile The file to be installed into the cache.
@@ -85,33 +111,80 @@ public final class DownloadCache {
      */
     public void install(final URI uri, final File outputFile, final Checksums checksums)
         throws IOException {
-        try {
-            Files.createDirectories(this.basedir.toPath());
-        } catch (final IOException ex) {
-            throw new IOException(
-                String.format(
-                    "Could not create cache directory: %s", this.basedir.getAbsolutePath()
-                ),
-                ex
-            );
-        }
         this.index.getLock().lock();
         try {
-            final Optional<String> entry = this.getEntry(uri, checksums);
-            if (!entry.isPresent()) {
-                final String fileName = String.format(
-                    "%s_%s", outputFile.getName(), DigestUtils.md5Hex(uri.toString())
-                );
-                Files.copy(
-                    outputFile.toPath(),
-                    new File(this.basedir, fileName).toPath(),
-                    StandardCopyOption.REPLACE_EXISTING
-                );
-                this.index.put(uri, fileName);
+            if (!this.getEntry(uri, checksums).isPresent()) {
+                this.store(uri, outputFile, checksums, Validators.NONE);
             }
         } finally {
             this.index.getLock().unlock();
         }
+    }
+
+    /**
+     * Validators the server sent with the cached file.
+     *
+     * <p>They are kept in a {@code .meta} file next to the cached file rather than in the
+     * index, so that older plugin versions sharing the cache can still read the index.</p>
+     * @param uri The URI of the cached file.
+     * @return Validators, {@link Validators#NONE} if there are none, e.g. the file was cached by
+     *  a plugin version that didn't record them, or they belong to different content.
+     */
+    public Validators validators(final URI uri) {
+        Validators result = Validators.NONE;
+        this.index.getLock().lock();
+        try {
+            final String resource = this.index.get(uri);
+            if (resource != null) {
+                result = this.readMeta(resource);
+            }
+        } finally {
+            this.index.getLock().unlock();
+        }
+        return result;
+    }
+
+    /**
+     * Stores a freshly downloaded file in the cache, replacing the cached file if its content
+     * differs, and records the validators the server sent with it.
+     *
+     * @param uri The URI the file was downloaded from.
+     * @param downloaded The downloaded file.
+     * @param checksums The checksums a cached file must match to count as an existing entry.
+     * @param validators Validators the server sent with the file.
+     * @return True if the cache had no such content for the URI before, i.e. the file is new or
+     *  has changed; false if the cached file already had the same content.
+     * @throws IOException If the cache directory cannot be created, or the file or its
+     *  validators can't be written.
+     */
+    public boolean store(
+        final URI uri, final File downloaded, final Checksums checksums, final Validators validators
+    ) throws IOException {
+        this.createBasedir();
+        final boolean changed;
+        this.index.getLock().lock();
+        try {
+            final Optional<String> entry = this.getEntry(uri, checksums);
+            final String fileName = entry.orElseGet(() -> DownloadCache.fileName(uri, downloaded));
+            final File cached = new File(this.basedir, fileName);
+            changed = !entry.isPresent() || cached.length() != downloaded.length()
+                || !FileUtils.contentEquals(cached, downloaded);
+            if (changed) {
+                this.replace(
+                    cached.toPath(),
+                    temporary -> Files.copy(downloaded.toPath(), temporary, StandardCopyOption.REPLACE_EXISTING)
+                );
+            }
+            if (!entry.isPresent()) {
+                this.index.put(uri, fileName);
+            }
+            // the content goes first: old validators with new content only cost a download,
+            // new validators with old content would keep the old content forever
+            this.writeMeta(fileName, validators);
+        } finally {
+            this.index.getLock().unlock();
+        }
+        return changed;
     }
 
     /**
@@ -131,5 +204,121 @@ public final class DownloadCache {
                     return resFile.isFile() && checksums.isValid(resFile);
                 }
             );
+    }
+
+    /**
+     * Creates the cache directory if it doesn't exist.
+     * @throws IOException If the cache directory cannot be created.
+     */
+    private void createBasedir() throws IOException {
+        try {
+            Files.createDirectories(this.basedir.toPath());
+        } catch (final IOException ex) {
+            throw new IOException(
+                String.format(
+                    "Could not create cache directory: %s", this.basedir.getAbsolutePath()
+                ),
+                ex
+            );
+        }
+    }
+
+    /**
+     * Reads the validators recorded for a cached file.
+     * @param resource Name of the cached file.
+     * @return Validators, {@link Validators#NONE} if none are recorded, they can't be read or
+     *  they describe a file of another size.
+     */
+    private Validators readMeta(final String resource) {
+        Validators result = Validators.NONE;
+        final File meta = new File(this.basedir, resource + META_SUFFIX);
+        if (meta.isFile()) {
+            final Properties properties = new Properties();
+            try (InputStream input = Files.newInputStream(meta.toPath())) {
+                properties.load(input);
+            } catch (final IOException | IllegalArgumentException ex) {
+                properties.clear();
+            }
+            final String size = String.valueOf(new File(this.basedir, resource).length());
+            if (size.equals(properties.getProperty(META_SIZE))) {
+                result = new Validators(
+                    properties.getProperty(META_ETAG), properties.getProperty(META_LAST_MODIFIED)
+                );
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Records the validators of a cached file, or removes the record if there are none.
+     * @param resource Name of the cached file.
+     * @param validators Validators the server sent with the file.
+     * @throws IOException If the record can't be written.
+     */
+    private void writeMeta(final String resource, final Validators validators) throws IOException {
+        final Path meta = new File(this.basedir, resource + META_SUFFIX).toPath();
+        if (validators.isEmpty()) {
+            Files.deleteIfExists(meta);
+        } else {
+            final Properties properties = new Properties();
+            validators.etag().ifPresent(value -> properties.setProperty(META_ETAG, value));
+            validators.lastModified().ifPresent(value -> properties.setProperty(META_LAST_MODIFIED, value));
+            properties.setProperty(META_SIZE, String.valueOf(new File(this.basedir, resource).length()));
+            this.replace(
+                meta,
+                temporary -> {
+                    try (OutputStream output = Files.newOutputStream(temporary)) {
+                        properties.store(output, "download-maven-plugin: validators of the cached file");
+                    }
+                }
+            );
+        }
+    }
+
+    /**
+     * Replaces a file in the cache directory in one step, so that a concurrent build never
+     * sees a partially written file.
+     * @param target File to replace.
+     * @param writer Writes the new content to the temporary file it is given.
+     * @throws IOException If the file can't be written.
+     */
+    private void replace(final Path target, final Writer writer) throws IOException {
+        final Path temporary = Files.createTempFile(this.basedir.toPath(), "tmp-", ".part");
+        try {
+            writer.writeTo(temporary);
+            try {
+                Files.move(
+                    temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
+                );
+            } catch (final AtomicMoveNotSupportedException ex) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    /**
+     * Name of the cache file for a download.
+     * @param uri The URI of the file.
+     * @param outputFile The downloaded file.
+     * @return File name, unique for the URI.
+     */
+    private static String fileName(final URI uri, final File outputFile) {
+        return String.format("%s_%s", outputFile.getName(), DigestUtils.md5Hex(uri.toString()));
+    }
+
+    /**
+     * Writes a file.
+     */
+    @FunctionalInterface
+    private interface Writer {
+
+        /**
+         * Writes the content.
+         * @param file File to write, exists and is empty.
+         * @throws IOException If the file can't be written.
+         */
+        void writeTo(Path file) throws IOException;
     }
 }
