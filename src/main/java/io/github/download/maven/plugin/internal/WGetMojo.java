@@ -244,7 +244,11 @@ public final class WGetMojo extends AbstractMojo {
      *   <li>{@code always}: the server is asked whether the cached file is still current, with
      *   a conditional request ({@code If-None-Match} / {@code If-Modified-Since}), and a newer
      *   version is downloaded. Use it for URLs whose content changes, e.g. "latest" links.
-     *   If the server can't be reached, the cached file is used and a warning is logged.</li>
+     *   A server that doesn't send {@code ETag} / {@code Last-Modified}, or ignores conditional
+     *   requests, sends the whole file every time; it only counts as changed if its content
+     *   differs from the cached copy. If the server can't be reached, answers with a server error
+     *   or with {@code 429}, the cached file is used and a warning is logged. If it refuses the
+     *   request ({@code 4xx}), the build fails unless {@code failOnError} is {@code false}.</li>
      * </ul>
      * The check is not made in offline mode, nor when a checksum ({@code md5}, {@code sha1},
      * {@code sha256}, {@code sha512}) is configured, as the checksum already pins the content.

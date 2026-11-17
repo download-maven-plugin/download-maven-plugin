@@ -69,7 +69,13 @@ For those, set `updatePolicy` to `always`:
 ```
 
 The plugin then asks the server whether the cached file is still current, with a conditional request
-(`If-None-Match` / `If-Modified-Since`). The file is only downloaded again if it has changed.
+(`If-None-Match` / `If-Modified-Since`, from the `ETag` / `Last-Modified` the server sent with the file).
+If the server answers `304 Not Modified`, nothing is downloaded. Otherwise the file is downloaded again,
+and it only counts as changed if its content differs from the cached copy.
+
+* A server that sends neither `ETag` nor `Last-Modified`, or ignores conditional requests,
+  sends the whole file on every build. The same happens once for files cached by plugin versions
+  before 2.2.0, which didn't record these headers.
 
 * If the server can't be reached, answers with a server error (`5xx`) or with `429 Too Many Requests`,
   the cached file is used and a warning is logged.
