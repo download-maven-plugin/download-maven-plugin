@@ -255,8 +255,10 @@ public final class Downloader {
      * it is stored in the cache, see {@link #complete}.</p>
      * @param request What to download and how
      * @return Validators of the file the server sent into the output file; empty if the cached
-     *  copy is to be used: the server reported it as current, or couldn't be asked
-     * @throws DownloadException On misconfiguration, e.g. credentials that can't be resolved
+     *  copy is to be used: the server reported it as current, couldn't be asked, or refused
+     *  the request while {@code failOnError} is not set
+     * @throws DownloadException On misconfiguration, e.g. credentials that can't be resolved,
+     *  or if the server refused the request (4xx, unfollowed redirect) and {@code failOnError} is set
      * @throws IOException If a partially downloaded file can't be removed
      */
     @SuppressWarnings("checkstyle:IllegalCatch")
@@ -277,16 +279,37 @@ public final class Downloader {
             } catch (final DownloadException ex) {
                 throw ex;
             } catch (final Throwable ex) {
+                Files.deleteIfExists(outputFile.toPath());
+                if (request.failOnError() && Downloader.rejected(ex)) {
+                    throw new DownloadException(ex.getMessage(), ex);
+                }
                 this.log.warn(
                     String.format(
                         "Could not check %s for a newer version, using the cached file: %s",
                         request.uri(), ex.getMessage()
                     )
                 );
-                Files.deleteIfExists(outputFile.toPath());
             }
         }
         return fetched;
+    }
+
+    /**
+     * Whether the server answered, but refused to serve the file: a client error such as
+     * {@code 404} or {@code 401}, or a redirect that isn't followed. Unlike I/O errors, server
+     * errors and {@code 429 Too Many Requests}, such an answer won't go away by itself, so the
+     * cached copy must not hide it.
+     * @param failure Failure of the request
+     * @return Whether the failure is a refusal by the server
+     */
+    private static boolean rejected(final Throwable failure) {
+        boolean rejected = false;
+        if (failure instanceof DownloadFailureException) {
+            final int code = ((DownloadFailureException) failure).getHttpCode();
+            rejected = code < HttpCodes.INTERNAL_SERVER_ERROR.getCode()
+                && code != HttpCodes.TOO_MANY_REQUESTS.getCode();
+        }
+        return rejected;
     }
 
     /**

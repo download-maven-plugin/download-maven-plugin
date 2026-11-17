@@ -481,14 +481,61 @@ public class DownloaderTest {
     }
 
     @Test
-    public void cachedFileIsUsedWhenServerAnswersWithError() throws Exception {
+    public void cachedFileIsUsedWhenServerAnswersWithServerError() throws Exception {
         this.fetcher.serve(URI_UNDER_TEST, "v1");
-        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(404, "Not Found"));
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(503, "Unavailable"));
         download(r -> r.cache(this.cache));
         Files.delete(output().toPath());
 
         download(r -> r.cache(this.cache).revalidate(true));
         assertThat(read(output()), is("v1"));
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerAnswersTooManyRequests() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(429, "Too Many Requests"));
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(read(output()), is("v1"));
+    }
+
+    @Test
+    public void refusalByServerFailsRevalidation() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.respond(
+            URI_UNDER_TEST,
+            target -> {
+                write(target, "partial");
+                throw new DownloadFailureException(404, "Not Found");
+            }
+        );
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        final DownloadException error = assertThrows(
+            DownloadException.class, () -> download(r -> r.cache(this.cache).revalidate(true))
+        );
+        assertThat(error.getCause(), instanceOf(DownloadFailureException.class));
+        assertThat(output().exists(), is(false));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("v1"))), is("v1"));
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerRefusesWithoutFailOnError() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(404, "Not Found"));
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).failOnError(false).revalidate(true));
+        assertThat(read(output()), is("v1"));
+        verify(this.log).warn(
+            "Could not check " + URI_UNDER_TEST
+                + " for a newer version, using the cached file: Download failed with code 404: Not Found"
+        );
     }
 
     @Test

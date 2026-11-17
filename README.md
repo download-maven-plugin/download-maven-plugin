@@ -71,7 +71,10 @@ For those, set `updatePolicy` to `always`:
 The plugin then asks the server whether the cached file is still current, with a conditional request
 (`If-None-Match` / `If-Modified-Since`). The file is only downloaded again if it has changed.
 
-* If the server can't be reached, the cached file is used and a warning is logged.
+* If the server can't be reached, answers with a server error (`5xx`) or with `429 Too Many Requests`,
+  the cached file is used and a warning is logged.
+* If the server refuses the request (`4xx`, e.g. the file is gone or the credentials expired),
+  the build fails, unless `failOnError` is `false`: then the cached file is used and a warning is logged.
 * No request is made in offline mode, or when a checksum (`md5`, `sha1`, `sha256`, `sha512`) is configured,
   because the checksum already pins the content.
 * An existing output file is still left alone unless `overwrite` is set.
