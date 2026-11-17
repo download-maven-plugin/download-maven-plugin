@@ -15,6 +15,7 @@
  */
 package io.github.download.maven.plugin.internal;
 
+import io.github.download.maven.plugin.internal.cache.Validators;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -26,10 +27,16 @@ public interface Fetcher {
 
     /**
      * Downloads the resource into the target file, replacing its content.
+     *
+     * <p>If {@code known} is not empty the download is conditional: when the server reports
+     * that this version is still current, nothing is written and the outcome is
+     * {@link Fetched#isNotModified() not modified}.</p>
      * @param uri Resource to download
      * @param target File to write the content to
+     * @param known Validators of the version the caller already has, {@link Validators#NONE} if none
+     * @return What happened, with the validators of the content that was written
      * @throws IOException If the transfer fails
      * @throws DownloadException If the transfer can't be set up, e.g. credentials are missing
      */
-    void fetch(URI uri, File target) throws IOException, DownloadException;
+    Fetched fetch(URI uri, File target, Validators known) throws IOException, DownloadException;
 }

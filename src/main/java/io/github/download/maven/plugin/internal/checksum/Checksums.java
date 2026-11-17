@@ -66,6 +66,14 @@ public final class Checksums {
     }
 
     /**
+     * Whether any checksum was supplied.
+     * @return True if no checksum was supplied, so any content is accepted.
+     */
+    public boolean isEmpty() {
+        return this.supplied.isEmpty();
+    }
+
+    /**
      * Validates the file with supplied checksums.
      * @param file File to validate.
      * @return True if the file matches all supplied checksums

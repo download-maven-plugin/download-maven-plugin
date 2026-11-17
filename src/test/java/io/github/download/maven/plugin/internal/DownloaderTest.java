@@ -1,6 +1,8 @@
 package io.github.download.maven.plugin.internal;
 
 import io.github.download.maven.plugin.internal.cache.DownloadCache;
+import io.github.download.maven.plugin.internal.cache.InUseCaches;
+import io.github.download.maven.plugin.internal.cache.Validators;
 import io.github.download.maven.plugin.internal.checksum.ChecksumMismatchException;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
 import java.io.File;
@@ -174,6 +176,7 @@ public class DownloaderTest {
             fooStarted.countDown();
             await(barFinished);
             write(target, "foo");
+            return Fetched.content(Validators.NONE);
         });
         this.fetcher.serve(bar, "bar");
 
@@ -388,6 +391,237 @@ public class DownloaderTest {
         verify(this.log).info("Unpacking even though unchanged cache file exists because unpack = true");
     }
 
+    // ---------------------------------------------------------------- revalidation of cached files
+
+    @Test
+    public void revalidationSendsKnownValidatorsAndUsesCachedFileWhenNotModified() throws Exception {
+        final Validators validators = new Validators("\"v1\"", "Sat, 01 Jan 2000 00:00:00 GMT");
+        this.fetcher.serve(URI_UNDER_TEST, "v1", validators);
+        this.fetcher.notModified(URI_UNDER_TEST);
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(this.fetcher.known, contains(Validators.NONE, validators));
+        assertThat(read(output()), is("v1"));
+        verify(this.log).info("Cached file is up to date: not modified on the server");
+    }
+
+    /**
+     * Issue #315: a "latest" URL that starts pointing at a new release must not be served
+     * from the cache forever. Redirects don't matter here: the validators come from the final response.
+     */
+    @Test
+    public void revalidationReplacesOutdatedCachedFile() throws Exception {
+        final Validators second = new Validators("\"v2\"", null);
+        this.fetcher.serve(URI_UNDER_TEST, "v1", new Validators("\"v1\"", null));
+        this.fetcher.serve(URI_UNDER_TEST, "v2", second);
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(read(output()), is("v2"));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("v2"))), is("v2"));
+        assertThat(this.cache.validators(URI_UNDER_TEST), is(second));
+        assertThat(this.changed, contains(output(), output()));
+    }
+
+    @Test
+    public void revalidationAppliesToOverwrittenOutputFile() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.serve(URI_UNDER_TEST, "v2");
+        download(r -> r.cache(this.cache));
+
+        download(r -> r.cache(this.cache).overwrite(true).revalidate(true));
+        assertThat(read(output()), is("v2"));
+    }
+
+    @Test
+    public void sameContentFromServerWithoutValidatorsCountsAsUnchanged() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "archive");
+        download(r -> r.cache(this.cache).unpackWhenChanged(true));
+        this.unpacker.sources.clear();
+
+        download(r -> r.cache(this.cache).unpackWhenChanged(true).revalidate(true));
+        assertThat(this.fetcher.known, contains(Validators.NONE, Validators.NONE));
+        assertThat(this.unpacker.sources, is(empty()));
+        assertThat(output().exists(), is(false));
+        verify(this.log).info("Cached file is up to date: the server sent the same content");
+    }
+
+    @Test
+    public void newVersionIsUnpackedWhenChanged() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "archive 1");
+        this.fetcher.serve(URI_UNDER_TEST, "archive 2");
+        download(r -> r.cache(this.cache).unpackWhenChanged(true));
+
+        download(r -> r.cache(this.cache).unpackWhenChanged(true).revalidate(true));
+        assertThat(this.unpacker.sources.size(), is(2));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("archive 2"))), is("archive 2"));
+    }
+
+    /**
+     * On Windows, another build reading the cached file prevents replacing it.
+     * The new version must still be unpacked, not the stale cached copy.
+     */
+    @Test
+    public void downloadedFileIsUnpackedWhenCachedFileIsInUse() throws Exception {
+        final DownloadCache cache = InUseCaches.create(this.temporaryFolder.newFolder("in-use"), this.log);
+        this.fetcher.serve(URI_UNDER_TEST, "archive 1");
+        this.fetcher.serve(URI_UNDER_TEST, "archive 2");
+        download(r -> r.cache(cache).unpackWhenChanged(true));
+
+        download(r -> r.cache(cache).unpackWhenChanged(true).revalidate(true));
+        assertThat(this.unpacker.contents, contains("archive 1", "archive 2"));
+        assertThat(this.unpacker.sources.get(1), is(output()));
+        assertThat(output().exists(), is(false));
+        assertThat(read(cache.getArtifact(URI_UNDER_TEST, md5("archive 1"))), is("archive 1"));
+        verify(this.log).warn(startsWith("Could not update the download cache, using the downloaded file: "));
+    }
+
+    @Test
+    public void downloadedFileIsCopiedWhenCachedFileIsInUse() throws Exception {
+        final DownloadCache cache = InUseCaches.create(this.temporaryFolder.newFolder("in-use"), this.log);
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.serve(URI_UNDER_TEST, "v2");
+        download(r -> r.cache(cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(cache).revalidate(true));
+        assertThat(read(output()), is("v2"));
+        assertThat(this.changed, contains(output(), output()));
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerCannotBeAsked() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.respond(
+            URI_UNDER_TEST,
+            target -> {
+                write(target, "partial");
+                throw new SocketTimeoutException("Read timed out");
+            }
+        );
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(read(output()), is("v1"));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("v1"))), is("v1"));
+        verify(this.log).warn(
+            "Could not check " + URI_UNDER_TEST + " for a newer version, using the cached file: Read timed out"
+        );
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerAnswersWithServerError() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(503, "Unavailable"));
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(read(output()), is("v1"));
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerAnswersTooManyRequests() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(429, "Too Many Requests"));
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(read(output()), is("v1"));
+    }
+
+    @Test
+    public void refusalByServerFailsRevalidation() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.respond(
+            URI_UNDER_TEST,
+            target -> {
+                write(target, "partial");
+                throw new DownloadFailureException(404, "Not Found");
+            }
+        );
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        final DownloadException error = assertThrows(
+            DownloadException.class, () -> download(r -> r.cache(this.cache).revalidate(true))
+        );
+        assertThat(error.getCause(), instanceOf(DownloadFailureException.class));
+        assertThat(output().exists(), is(false));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("v1"))), is("v1"));
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerRefusesWithoutFailOnError() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(404, "Not Found"));
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).failOnError(false).revalidate(true));
+        assertThat(read(output()), is("v1"));
+        verify(this.log).warn(
+            "Could not check " + URI_UNDER_TEST
+                + " for a newer version, using the cached file: Download failed with code 404: Not Found"
+        );
+    }
+
+    @Test
+    public void revalidationIsRetried() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(503, "Unavailable"));
+        this.fetcher.serve(URI_UNDER_TEST, "v2");
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true).retryPolicy(retries(2, null)));
+        assertThat(read(output()), is("v2"));
+    }
+
+    @Test
+    public void checksumPinsContentSoServerIsNotAsked() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).checksums(md5("v1")).revalidate(true));
+        assertThat(this.fetcher.requests.size(), is(1));
+        assertThat(read(output()), is("v1"));
+    }
+
+    @Test
+    public void serverIsNotAskedOffline() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).offline(true).revalidate(true));
+        assertThat(this.fetcher.requests.size(), is(1));
+        assertThat(read(output()), is("v1"));
+    }
+
+    @Test
+    public void validatorsAreRecordedEvenIfRevalidationIsOff() throws Exception {
+        final Validators validators = new Validators("\"v1\"", null);
+        this.fetcher.serve(URI_UNDER_TEST, "v1", validators);
+        download(r -> r.cache(this.cache));
+        assertThat(this.cache.validators(URI_UNDER_TEST), is(validators));
+    }
+
+    @Test
+    public void notModifiedWithoutCachedFileFailsDownload() {
+        this.fetcher.notModified(URI_UNDER_TEST);
+        final DownloadException error = assertThrows(DownloadException.class, () -> download(r -> { }));
+        assertThat(
+            error.getMessage(), is("Server answered 304 Not Modified, but there is no cached copy to use")
+        );
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private void download(final Consumer<DownloadRequest.Builder> customizer) throws Exception {
@@ -437,7 +671,7 @@ public class DownloaderTest {
 
     @FunctionalInterface
     private interface Response {
-        void writeTo(File target) throws IOException;
+        Fetched writeTo(File target) throws IOException;
     }
 
     /**
@@ -449,12 +683,29 @@ public class DownloaderTest {
 
         private final List<URI> requests = new CopyOnWriteArrayList<>();
 
+        /** Validators received with each request. */
+        private final List<Validators> known = new CopyOnWriteArrayList<>();
+
         void serve(final URI uri, final String content) {
-            respond(uri, target -> write(target, content));
+            serve(uri, content, Validators.NONE);
         }
 
         void respond(final URI uri, final Response response) {
             this.responses.computeIfAbsent(uri, ignored -> new CopyOnWriteArrayList<>()).add(response);
+        }
+
+        void serve(final URI uri, final String content, final Validators validators) {
+            respond(
+                uri,
+                target -> {
+                    write(target, content);
+                    return Fetched.content(validators);
+                }
+            );
+        }
+
+        void notModified(final URI uri) {
+            this.responses.computeIfAbsent(uri, ignored -> new CopyOnWriteArrayList<>()).add((Response) target -> Fetched.notModified());
         }
 
         void fail(final URI uri, final Exception failure) {
@@ -462,8 +713,9 @@ public class DownloaderTest {
         }
 
         @Override
-        public void fetch(final URI uri, final File target) throws IOException {
+        public Fetched fetch(final URI uri, final File target, final Validators validators) throws IOException {
             this.requests.add(uri);
+            this.known.add(validators);
             final List<Object> queue = this.responses.get(uri);
             if (queue == null || queue.isEmpty()) {
                 throw new DownloadFailureException(404, "Not Found");
@@ -475,7 +727,7 @@ public class DownloaderTest {
             if (next instanceof RuntimeException) {
                 throw (RuntimeException) next;
             }
-            ((Response) next).writeTo(target);
+            return ((Response) next).writeTo(target);
         }
     }
 
@@ -486,9 +738,13 @@ public class DownloaderTest {
 
         private final List<File> sources = new ArrayList<>();
 
+        private final List<String> contents = new ArrayList<>();
+
         @Override
-        public void unpack(final File source, final File outputDirectory, final String outputFileName) {
+        public void unpack(final File source, final File outputDirectory, final String outputFileName)
+            throws IOException {
             this.sources.add(source);
+            this.contents.add(read(source));
         }
     }
 }

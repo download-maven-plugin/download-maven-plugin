@@ -15,6 +15,7 @@
  */
 package io.github.download.maven.plugin.internal;
 
+import io.github.download.maven.plugin.internal.cache.Validators;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -23,6 +24,8 @@ import java.util.Collections;
 import java.util.List;
 import javax.annotation.Nullable;
 import org.apache.http.Header;
+import org.apache.http.HttpHeaders;
+import org.apache.http.message.BasicHeader;
 import org.apache.maven.plugin.logging.Log;
 
 /**
@@ -31,6 +34,10 @@ import org.apache.maven.plugin.logging.Log;
  * <p>Credentials, proxy and progress reporting come from the {@link Environment}. They are
  * resolved on the first fetch, so a misconfigured server is only reported when a download
  * is actually needed, and only once across retries.</p>
+ *
+ * <p>Known {@link Validators} are sent as {@code If-None-Match} and {@code If-Modified-Since}.
+ * Both are sent because real servers honour only one of them, and not the same one. A header
+ * of that name configured on the plugin wins.</p>
  */
 public final class HttpFetcher implements Fetcher {
 
@@ -108,7 +115,8 @@ public final class HttpFetcher implements Fetcher {
     }
 
     @Override
-    public void fetch(final URI uri, final File target) throws IOException, DownloadException {
+    public Fetched fetch(final URI uri, final File target, final Validators known)
+        throws IOException, DownloadException {
         if (!this.resolved) {
             if (this.explicit == null) {
                 this.credentials = this.environment.credentialsFor(uri, this.serverId).orElse(null);
@@ -125,13 +133,38 @@ public final class HttpFetcher implements Fetcher {
         } else {
             report = new SilentProgressReport(this.log);
         }
-        this.requester
+        return this.requester
             .withUri(uri)
             .withCredentials(this.credentials)
             .withProxy(this.proxy)
             .withProgressReport(report)
             .withLog(this.log)
             .build()
-            .download(target, this.headers);
+            .download(target, this.conditional(known));
+    }
+
+    /**
+     * Request headers with the conditional ones added.
+     * @param known Validators of the version the caller already has
+     * @return Headers to send
+     */
+    private List<Header> conditional(final Validators known) {
+        final List<Header> result = new ArrayList<>(this.headers);
+        known.etag()
+            .filter(ignored -> !this.configures(HttpHeaders.IF_NONE_MATCH))
+            .ifPresent(etag -> result.add(new BasicHeader(HttpHeaders.IF_NONE_MATCH, etag)));
+        known.lastModified()
+            .filter(ignored -> !this.configures(HttpHeaders.IF_MODIFIED_SINCE))
+            .ifPresent(date -> result.add(new BasicHeader(HttpHeaders.IF_MODIFIED_SINCE, date)));
+        return result;
+    }
+
+    /**
+     * Whether a header is configured on the plugin.
+     * @param name Header name
+     * @return True if the configured headers contain it
+     */
+    private boolean configures(final String name) {
+        return this.headers.stream().anyMatch(header -> header.getName().equalsIgnoreCase(name));
     }
 }

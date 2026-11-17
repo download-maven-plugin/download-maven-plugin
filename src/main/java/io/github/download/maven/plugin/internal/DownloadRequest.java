@@ -40,6 +40,7 @@ public final class DownloadRequest {
     private final boolean unpackWhenChanged;
     private final boolean failOnError;
     private final boolean offline;
+    private final boolean revalidate;
     private final long lockWaitMillis;
     private final String permissions;
     private final RetryPolicy retryPolicy;
@@ -60,6 +61,7 @@ public final class DownloadRequest {
         this.unpackWhenChanged = builder.unpackWhenChanged;
         this.failOnError = builder.failOnError;
         this.offline = builder.offline;
+        this.revalidate = builder.revalidate;
         this.lockWaitMillis = builder.lockWaitMillis;
         this.permissions = builder.permissions;
         this.retryPolicy = builder.retryPolicy;
@@ -162,6 +164,14 @@ public final class DownloadRequest {
     }
 
     /**
+     * Whether a cached file is checked against the server before it is used.
+     * @return True to ask the server whether the cached file is still current
+     */
+    public boolean revalidate() {
+        return this.revalidate;
+    }
+
+    /**
      * How long to wait for another download of the same file.
      * @return Milliseconds
      */
@@ -208,6 +218,7 @@ public final class DownloadRequest {
         private boolean unpackWhenChanged;
         private boolean failOnError = true;
         private boolean offline;
+        private boolean revalidate;
         private long lockWaitMillis = 30_000L;
         private String permissions;
         private RetryPolicy retryPolicy = RetryPolicy.none();
@@ -264,6 +275,11 @@ public final class DownloadRequest {
 
         public Builder offline(final boolean offline) {
             this.offline = offline;
+            return this;
+        }
+
+        public Builder revalidate(final boolean revalidate) {
+            this.revalidate = revalidate;
             return this;
         }
 

@@ -15,6 +15,9 @@
  */
 package io.github.download.maven.plugin.internal;
 
+import io.github.download.maven.plugin.internal.cache.CachedFileInUseException;
+import io.github.download.maven.plugin.internal.cache.DownloadCache;
+import io.github.download.maven.plugin.internal.cache.Validators;
 import io.github.download.maven.plugin.internal.checksum.ChecksumMismatchException;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
 import io.github.resilience4j.core.IntervalFunction;
@@ -33,6 +36,11 @@ import org.apache.maven.plugin.logging.Log;
  * Downloads a file: guards it against concurrent downloads, reuses an existing or
  * cached copy, fetches it with retries, verifies checksums, populates the cache,
  * applies permissions and optionally unpacks it.
+ *
+ * <p>A cached copy is used as is, unless the request asks to {@link DownloadRequest#revalidate()
+ * revalidate} it. Then the server is asked whether the copy is still current, and a newer
+ * version replaces it. If the server can't be asked, e.g. it is unreachable or answers with an
+ * error, the cached copy is used.</p>
  *
  * <p>Talks to the outside world only through {@link Fetcher}, {@link Unpacker} and
  * {@link OutputListener}, so it can be tested without network or Maven.</p>
@@ -123,19 +131,24 @@ public final class Downloader {
     private void downloadLocked(final DownloadRequest request) throws DownloadException, IOException {
         final File outputFile = request.outputFile();
         Optional<File> cachedFile = Optional.empty();
+        Optional<Validators> fetched = Optional.empty();
         boolean fileWasCached = false;
         boolean available = true;
         if (!this.keepExisting(request)) {
             cachedFile = request.cache().map(cache -> cache.getArtifact(request.uri(), request.checksums()));
             fileWasCached = cachedFile.map(File::exists).orElse(false);
             if (fileWasCached) {
+                fetched = this.revalidate(request);
+            }
+            if (fileWasCached && !fetched.isPresent()) {
                 this.useCached(request, cachedFile.get());
-            } else {
-                available = this.fetch(request);
+            } else if (!fileWasCached) {
+                fetched = this.fetch(request);
+                available = fetched.isPresent();
             }
         }
         if (available) {
-            this.complete(request, cachedFile, fileWasCached);
+            this.complete(request, cachedFile, fileWasCached, fetched);
         }
     }
 
@@ -193,13 +206,13 @@ public final class Downloader {
     /**
      * Fetches the file with retries and verifies its checksums.
      * @param request What to download and how
-     * @return True if the file was downloaded, false if a failure was ignored
+     * @return Validators of the downloaded file, empty if a failure was ignored
      * @throws DownloadException If the download fails and {@code failOnError} is set,
      *  or regardless of it on checksum mismatch or misconfiguration
      */
     @SuppressWarnings("checkstyle:IllegalCatch")
-    private boolean fetch(final DownloadRequest request) throws DownloadException {
-        boolean fetched = false;
+    private Optional<Validators> fetch(final DownloadRequest request) throws DownloadException {
+        Optional<Validators> fetched = Optional.empty();
         if (request.offline()) {
             this.fail(request, "No file in cache and maven is in offline mode");
             this.log.warn("Ignoring download failure.");
@@ -207,14 +220,21 @@ public final class Downloader {
             final File outputFile = request.outputFile();
             final Checksums checksums = request.checksums();
             try {
-                this.retry(request.retryPolicy()).executeCheckedSupplier(
-                    () -> {
-                        this.fetcher.fetch(request.uri(), outputFile);
-                        checksums.validate(outputFile);
-                        return null;
-                    }
+                fetched = Optional.of(
+                    this.retry(request.retryPolicy()).executeCheckedSupplier(
+                        () -> {
+                            final Fetched result = this.fetcher.fetch(request.uri(), outputFile, Validators.NONE);
+                            if (result.isNotModified()) {
+                                // only possible with conditional headers configured on the plugin
+                                throw new IOException(
+                                    "Server answered 304 Not Modified, but there is no cached copy to use"
+                                );
+                            }
+                            checksums.validate(outputFile);
+                            return result.validators();
+                        }
+                    )
                 );
-                fetched = true;
             } catch (final DownloadException ex) {
                 throw ex;
             } catch (final Throwable ex) {
@@ -228,45 +248,140 @@ public final class Downloader {
     }
 
     /**
+     * Asks the server whether the cached copy is still current, if the request wants that.
+     *
+     * <p>Nothing is asked when offline. Nothing is asked either when checksums are supplied:
+     * they pin the content, so a newer version could only fail the build. A server that can't
+     * answer "not modified" sends the file again; whether its content changed is decided when
+     * it is stored in the cache, see {@link #complete}.</p>
+     * @param request What to download and how
+     * @return Validators of the file the server sent into the output file; empty if the cached
+     *  copy is to be used: the server reported it as current, couldn't be asked, or refused
+     *  the request while {@code failOnError} is not set
+     * @throws DownloadException On misconfiguration, e.g. credentials that can't be resolved,
+     *  or if the server refused the request (4xx, unfollowed redirect) and {@code failOnError} is set
+     * @throws IOException If a partially downloaded file can't be removed
+     */
+    @SuppressWarnings("checkstyle:IllegalCatch")
+    private Optional<Validators> revalidate(final DownloadRequest request) throws DownloadException, IOException {
+        Optional<Validators> fetched = Optional.empty();
+        if (request.revalidate() && !request.offline() && request.checksums().isEmpty()) {
+            final File outputFile = request.outputFile();
+            try {
+                final Validators known = request.cache().get().validators(request.uri());
+                final Fetched result = this.retry(request.retryPolicy()).executeCheckedSupplier(
+                    () -> this.fetcher.fetch(request.uri(), outputFile, known)
+                );
+                if (result.isNotModified()) {
+                    this.log.info("Cached file is up to date: not modified on the server");
+                } else {
+                    fetched = Optional.of(result.validators());
+                }
+            } catch (final DownloadException ex) {
+                throw ex;
+            } catch (final Throwable ex) {
+                Files.deleteIfExists(outputFile.toPath());
+                if (request.failOnError() && Downloader.rejected(ex)) {
+                    throw new DownloadException(ex.getMessage(), ex);
+                }
+                this.log.warn(
+                    String.format(
+                        "Could not check %s for a newer version, using the cached file: %s",
+                        request.uri(), ex.getMessage()
+                    )
+                );
+            }
+        }
+        return fetched;
+    }
+
+    /**
+     * Whether the server answered, but refused to serve the file: a client error such as
+     * {@code 404} or {@code 401}, or a redirect that isn't followed. Unlike I/O errors, server
+     * errors and {@code 429 Too Many Requests}, such an answer won't go away by itself, so the
+     * cached copy must not hide it.
+     * @param failure Failure of the request
+     * @return Whether the failure is a refusal by the server
+     */
+    private static boolean rejected(final Throwable failure) {
+        boolean rejected = false;
+        if (failure instanceof DownloadFailureException) {
+            final int code = ((DownloadFailureException) failure).getHttpCode();
+            rejected = code < HttpCodes.INTERNAL_SERVER_ERROR.getCode()
+                && code != HttpCodes.TOO_MANY_REQUESTS.getCode();
+        }
+        return rejected;
+    }
+
+    /**
      * Post-processes an available file: caches it, applies permissions, unpacks it
      * and notifies the listener.
+     *
+     * <p>The file counts as changed if it wasn't cached before, or if a revalidation brought
+     * content that differs from the cached copy. Only a changed file is unpacked with
+     * {@code unpackWhenChanged}. If the cached copy can't be updated, e.g. because another build
+     * reads it on Windows, the downloaded file is used and counts as changed.</p>
      * @param request What to download and how
      * @param cachedFile Cached copy of the file, if it was found in the cache
-     * @param fileWasCached Whether the file came from the cache
+     * @param fileWasCached Whether the file was in the cache before
+     * @param fetched Validators of the file if it was just downloaded
      * @throws DownloadException If permissions can't be applied or the archive type is unknown
      * @throws IOException If caching or unpacking fails
      */
     private void complete(
-        final DownloadRequest request, final Optional<File> cachedFile, final boolean fileWasCached
+        final DownloadRequest request, final Optional<File> cachedFile, final boolean fileWasCached,
+        final Optional<Validators> fetched
     ) throws DownloadException, IOException {
         final File outputFile = request.outputFile();
-        if (request.cache().isPresent()) {
-            request.cache().get().install(request.uri(), outputFile, request.checksums());
+        boolean changed = !fileWasCached;
+        Optional<File> source = cachedFile;
+        try {
+            if (request.cache().isPresent() && fetched.isPresent()) {
+                changed = request.cache().get().store(
+                    request.uri(), outputFile, request.checksums(), fetched.get()
+                );
+            } else if (request.cache().isPresent() && changed) {
+                request.cache().get().install(request.uri(), outputFile, request.checksums());
+            }
+        } catch (final CachedFileInUseException ex) {
+            // the cached copy may still be the old one: the downloaded file is what counts
+            this.log.warn(
+                String.format("Could not update the download cache, using the downloaded file: %s", ex.getMessage())
+            );
+            changed = true;
+            source = Optional.empty();
+        }
+        if (fileWasCached && fetched.isPresent()) {
+            this.log.info(
+                changed ? "Cached file was outdated: downloaded the current version"
+                    : "Cached file is up to date: the server sent the same content"
+            );
         }
         new FilePermissions(request.permissions(), this.log).applyTo(outputFile);
         if (request.unpack() || request.unpackWhenChanged()) {
-            if (!request.unpack() && fileWasCached) {
+            if (!request.unpack() && !changed) {
                 this.log.info("Skipping unpacking as the file has not changed");
             } else {
-                this.unpack(request, cachedFile, fileWasCached);
+                this.unpack(request, source, changed);
                 this.listener.changed(request.outputDirectory());
             }
+            Files.deleteIfExists(outputFile.toPath());
         } else {
             this.listener.changed(outputFile);
         }
     }
 
     /**
-     * Unpacks the cached copy if present, the downloaded file otherwise, then deletes the downloaded file.
+     * Unpacks the cached copy if present, the downloaded file otherwise.
      * @param request What to download and how
      * @param cachedFile Cached copy of the file
-     * @param fileWasCached Whether the file came from the cache
+     * @param changed Whether the file is new or has changed, only used for logging
      * @throws DownloadException If the archive type is unknown
      * @throws IOException If unpacking fails
      */
-    private void unpack(final DownloadRequest request, final Optional<File> cachedFile, final boolean fileWasCached)
+    private void unpack(final DownloadRequest request, final Optional<File> cachedFile, final boolean changed)
         throws DownloadException, IOException {
-        if (request.unpackWhenChanged() && fileWasCached) {
+        if (request.unpackWhenChanged() && !changed) {
             this.log.info("Unpacking even though unchanged cache file exists because unpack = true");
         }
         final File outputFile = request.outputFile();
@@ -279,9 +394,6 @@ public final class Downloader {
             throw new IllegalStateException("No file to unpack");
         }
         this.unpacker.unpack(source, request.outputDirectory(), request.outputFileName());
-        if (outputFile.exists()) {
-            outputFile.delete();
-        }
     }
 
     /**

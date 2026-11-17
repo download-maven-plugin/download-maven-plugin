@@ -15,6 +15,7 @@
  */
 package io.github.download.maven.plugin.internal;
 
+import io.github.download.maven.plugin.internal.cache.Validators;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,9 +28,11 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import javax.annotation.Nullable;
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
+import org.apache.http.HttpHeaders;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.auth.AuthScope;
@@ -89,11 +92,13 @@ public final class HttpFileRequester {
 
     /**
      * Downloads the resource with the given URI to the specified local file system location.
+     * Nothing is written if the server answers {@code 304 Not Modified} to conditional headers.
      * @param outputFile The output file.
      * @param headers List of headers.
+     * @return Whether the server answered "not modified", else the validators of the saved content.
      * @throws IOException Thrown if I/O operations don't succeed.
      */
-    public void download(final File outputFile, final List<Header> headers) throws IOException {
+    public Fetched download(final File outputFile, final List<Header> headers) throws IOException {
         try (CloseableHttpClient httpClient = this.createHttpClientBuilder().build()) {
             final HttpCacheContext clientContext = HttpCacheContext.create();
             clientContext.setCredentialsProvider(this.credentialsProvider);
@@ -105,7 +110,7 @@ public final class HttpFileRequester {
             }
             final HttpGet httpGet = new HttpGet(this.uri);
             headers.forEach(httpGet::setHeader);
-            httpClient.execute(
+            return httpClient.execute(
                 httpGet,
                 response -> this.handleResponse(this.uri, outputFile, response),
                 clientContext
@@ -114,14 +119,15 @@ public final class HttpFileRequester {
     }
 
     /**
-     * Handles response from the server.
+     * Handles response from the server: fails on errors and unfollowed redirects, saves the body
+     * otherwise, unless the server answered {@code 304 Not Modified}.
      * @param uri Request uri.
      * @param outputFile Output file for the download request.
      * @param response Response from the server.
-     * @return Original Response object.
+     * @return Whether the server answered "not modified", else the validators of the saved content.
      * @throws IOException Thrown if I/O operations don't succeed
      */
-    private Object handleResponse(final URI uri, final File outputFile, final HttpResponse response)
+    private Fetched handleResponse(final URI uri, final File outputFile, final HttpResponse response)
         throws IOException {
         final int statusCode = response.getStatusLine().getStatusCode();
         if (statusCode >= HttpCodes.BAD_REQUEST.getCode()) {
@@ -139,7 +145,30 @@ public final class HttpFileRequester {
                 )
             );
         }
-        final HttpEntity entity = response.getEntity();
+        final Fetched result;
+        if (statusCode == HttpCodes.NOT_MODIFIED.getCode()) {
+            result = Fetched.notModified();
+        } else {
+            this.save(uri, outputFile, response.getEntity());
+            result = Fetched.content(
+                new Validators(
+                    HttpFileRequester.header(response, HttpHeaders.ETAG),
+                    HttpFileRequester.header(response, HttpHeaders.LAST_MODIFIED)
+                )
+            );
+        }
+        return result;
+    }
+
+    /**
+     * Writes the response body to the file.
+     * @param uri Requested resource, for progress reporting.
+     * @param outputFile File to write.
+     * @param entity Response body, may be {@literal null}.
+     * @throws IOException If the body can't be read or the file can't be written.
+     */
+    private void save(final URI uri, final File outputFile, @Nullable final HttpEntity entity)
+        throws IOException {
         if (entity != null) {
             this.progressReport.initiate(uri, entity.getContentLength());
             try (
@@ -159,7 +188,16 @@ public final class HttpFileRequester {
                 throw ex;
             }
         }
-        return entity;
+    }
+
+    /**
+     * Value of a response header.
+     * @param response Response.
+     * @param name Header name.
+     * @return Header value, {@literal null} if the header is absent.
+     */
+    private static String header(final HttpResponse response, final String name) {
+        return Optional.ofNullable(response.getFirstHeader(name)).map(Header::getValue).orElse(null);
     }
 
     /**

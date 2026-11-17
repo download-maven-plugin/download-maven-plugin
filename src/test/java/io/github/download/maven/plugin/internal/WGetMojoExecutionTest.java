@@ -1,13 +1,19 @@
 package io.github.download.maven.plugin.internal;
 
+import com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import java.io.File;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.Map;
+import java.util.Random;
 import java.util.function.Consumer;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.execution.MavenExecutionRequest;
 import org.apache.maven.execution.MavenSession;
@@ -25,17 +31,25 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.sonatype.plexus.build.incremental.BuildContext;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
+import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
+import static com.github.tomakehurst.wiremock.client.WireMock.forbidden;
+import static com.github.tomakehurst.wiremock.client.WireMock.matching;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.notFound;
 import static com.github.tomakehurst.wiremock.client.WireMock.ok;
 import static com.github.tomakehurst.wiremock.client.WireMock.serverError;
 import static com.github.tomakehurst.wiremock.client.WireMock.unauthorized;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static io.github.download.maven.plugin.internal.Fields.set;
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.emptyArray;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.junit.Assert.assertThrows;
@@ -45,9 +59,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for {@link WGetMojo#execute()} branches not covered by {@link WGetMojoTest}:
- * parameter validation, locking, offline mode, retry configuration, unpacking and
- * network settings coming from the Maven session.
+ * Unit tests for {@link WGetMojo}: parameter validation and how parameters and the Maven
+ * session are passed on to the download. The download behaviour itself is tested in
+ * {@link DownloaderTest}, {@link HttpFetcherTest} and {@link HttpFileRequesterTest}.
  */
 public class WGetMojoExecutionTest {
 
@@ -209,6 +223,170 @@ public class WGetMojoExecutionTest {
         this.wireMock.verify(0, getRequestedFor(anyUrl()));
     }
 
+    @Test
+    public void cacheDirectoryMustBeADirectory() throws Exception {
+        final File notADirectory = this.temporaryFolder.newFile("not-a-directory");
+        final MojoFailureException error = assertThrows(
+            MojoFailureException.class,
+            () -> createMojo(m -> set(m, "cacheDirectory", notADirectory)).execute()
+        );
+        assertThat(error.getMessage(), containsString("cacheDirectory is not a directory"));
+    }
+
+    @Test
+    public void skipCacheLeavesCacheDirectoryEmpty() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        createMojo(m -> set(m, "skipCache", true)).execute();
+        assertThat(this.cacheDirectory.toFile().list(), is(emptyArray()));
+    }
+
+    @Test
+    public void missingCacheDirectoryIsCreated() throws Exception {
+        final File missing = this.cacheDirectory.resolve("a/b").toFile();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        createMojo(m -> set(m, "cacheDirectory", missing)).execute();
+        assertThat(read(output()), is("content"));
+        assertThat(missing.isDirectory(), is(true));
+    }
+
+    // ---------------------------------------------------------------- caching
+
+    @Test
+    public void largeFileIsServedFromCache() throws Exception {
+        final byte[] large = WGetMojoExecutionTest.randomBytes();
+        assertServedFromCache(ok().withBody(large));
+        assertThat(Files.readAllBytes(output()), is(large));
+    }
+
+    /**
+     * The cache stores what the plugin downloaded, whatever the server says about caching it.
+     */
+    @Test
+    public void responseNotMeantForCachingIsCached() throws Exception {
+        assertServedFromCache(ok("content").withHeader("Cache-Control", "no-store").withHeader("Vary", "*"));
+        assertThat(read(output()), is("content"));
+    }
+
+    /**
+     * A new version of the same size differs only in its content, which must be compared in full.
+     */
+    @Test
+    public void updatePolicyAlwaysReplacesLargeFileOfSameSize() throws Exception {
+        final byte[] first = WGetMojoExecutionTest.randomBytes();
+        final byte[] second = first.clone();
+        second[second.length - 1] ^= 1;
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(first)));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(second)));
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        assertThat(Files.readAllBytes(output()), is(second));
+        cleanOutputDirectory();
+        createMojo(m -> { }).execute();
+        assertThat(Files.readAllBytes(output()), is(second));
+        verify(this.log).info("Cached file was outdated: downloaded the current version");
+    }
+
+    @Test
+    public void updatePolicyAlwaysKeepsUnchangedLargeFile() throws Exception {
+        final byte[] large = WGetMojoExecutionTest.randomBytes();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody(large)));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        assertThat(Files.readAllBytes(output()), is(large));
+        verify(this.log).info("Cached file is up to date: the server sent the same content");
+    }
+
+    // ---------------------------------------------------------------- request and output configuration
+
+    @Test
+    public void sendsConfiguredHeaders() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        final Map<String, String> headers = new HashMap<>();
+        headers.put("X-Custom-1", "first custom header");
+        headers.put("X-Custom-2", "second custom header");
+        createMojo(m -> set(m, "headers", headers)).execute();
+        this.wireMock.verify(
+            getRequestedFor(anyUrl())
+                .withHeader("X-Custom-1", equalTo("first custom header"))
+                .withHeader("X-Custom-2", equalTo("second custom header"))
+        );
+    }
+
+    @Test
+    public void followsRedirectsByDefault() throws Exception {
+        for (final int code : new int[] {301, 302, 303}) {
+            stubRedirect(code);
+            createMojo(m -> {
+                set(m, "uri", URI.create(this.wireMock.baseUrl() + "/" + code));
+                set(m, "overwrite", true);
+            }).execute();
+            assertThat(read(output()), is("redirected"));
+        }
+    }
+
+    @Test
+    public void redirectFailsIfFollowRedirectsIsOff() throws Exception {
+        for (final int code : new int[] {301, 302, 303}) {
+            stubRedirect(code);
+            final MojoExecutionException error = assertThrows(
+                MojoExecutionException.class,
+                () -> createMojo(m -> {
+                    set(m, "uri", URI.create(this.wireMock.baseUrl() + "/" + code));
+                    set(m, "followRedirects", false);
+                }).execute()
+            );
+            assertThat(error.getMessage(), containsString("Download failed with code " + code));
+        }
+    }
+
+    @Test
+    public void overwriteReplacesExistingFile() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("new")));
+        TestFiles.write(output().toFile(), "old");
+        createMojo(m -> set(m, "overwrite", true)).execute();
+        assertThat(read(output()), is("new"));
+    }
+
+    @Test
+    public void eachChecksumParameterIsVerified() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        for (final String parameter : new String[] {"md5", "sha1", "sha256", "sha512"}) {
+            final MojoExecutionException error = assertThrows(
+                parameter,
+                MojoExecutionException.class,
+                () -> createMojo(m -> {
+                    // a failed download leaves the file behind
+                    set(m, "overwrite", true);
+                    set(m, parameter, "wrong");
+                }).execute()
+            );
+            assertThat(parameter, error.getCause().getMessage(), containsString("Not same digest as expected"));
+        }
+    }
+
+    @Test
+    public void alwaysVerifyChecksumReplacesExistingFileNotMatchingIt() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        TestFiles.write(output().toFile(), "wrong");
+        createMojo(m -> {
+            set(m, "alwaysVerifyChecksum", true);
+            set(m, "md5", DigestUtils.md5Hex("content"));
+        }).execute();
+        assertThat(read(output()), is("content"));
+        verify(this.log).warn(startsWith("The local version of file " + OUTPUT_FILE_NAME + " doesn't match"));
+    }
+
+    @Test
+    public void setsOutputFilePermissions() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
+        createMojo(m -> set(m, "outputFilePermissions", "+x")).execute();
+        assertThat(output().toFile().canExecute(), is(true));
+    }
+
     // ---------------------------------------------------------------- locking
 
     @Test
@@ -314,6 +492,20 @@ public class WGetMojoExecutionTest {
         verify(this.log, org.mockito.Mockito.times(2)).warn(startsWith("Download failed with code 500"));
     }
 
+    @Test
+    public void retriesConfiguredHttpCodes() {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(notFound()));
+        assertThrows(
+            MojoExecutionException.class,
+            () -> createMojo(m -> {
+                set(m, "retries", 3);
+                set(m, "retriesOnHttpCodes", "404,500");
+                set(m, "retriesIntervalInitial", 0L);
+            }).execute()
+        );
+        this.wireMock.verify(3, getRequestedFor(anyUrl()));
+    }
+
     // ---------------------------------------------------------------- unpacking
 
     @Test
@@ -335,6 +527,43 @@ public class WGetMojoExecutionTest {
         createMojo(m -> set(m, "unpackWhenChanged", true)).execute();
         verify(this.log).info("Skipping unpacking as the file has not changed");
         assertThat(this.outputDirectory.resolve("a.txt").toFile().exists(), is(false));
+    }
+
+    // ---------------------------------------------------------------- update policy
+
+    @Test
+    public void unknownUpdatePolicyFails() {
+        final MojoFailureException error = assertThrows(
+            MojoFailureException.class,
+            () -> createMojo(m -> set(m, "updatePolicy", "daily")).execute()
+        );
+        assertThat(error.getMessage(), is("updatePolicy must be 'never' or 'always', but was 'daily'"));
+    }
+
+    @Test
+    public void cachedFileIsUsedWithoutAskingServerByDefault() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("v1")));
+        createMojo(m -> { }).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("v2")));
+        cleanOutputDirectory();
+
+        createMojo(m -> { }).execute();
+        assertThat(read(output()), is("v1"));
+        this.wireMock.verify(1, getRequestedFor(anyUrl()));
+    }
+
+    @Test
+    public void updatePolicyAlwaysDownloadsNewVersionOfCachedFile() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("v1").withHeader("ETag", "\"v1\"")));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("v2").withHeader("ETag", "\"v2\"")));
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "Always")).execute();
+        assertThat(read(output()), is("v2"));
+        this.wireMock.verify(
+            getRequestedFor(anyUrl()).withHeader("If-None-Match", matching("\"v1.*"))
+        );
     }
 
     // ---------------------------------------------------------------- session credentials
@@ -384,6 +613,17 @@ public class WGetMojoExecutionTest {
         assertThat(error.getCause().getMessage(), containsString("Could not create cache directory"));
     }
 
+    @Test
+    public void downloadFailureIsReportedWithItsCause() {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(forbidden()));
+        final MojoExecutionException error = assertThrows(
+            MojoExecutionException.class, () -> createMojo(m -> { }).execute()
+        );
+        assertThat(error.getCause(), is(instanceOf(DownloadFailureException.class)));
+        assertThat(((DownloadFailureException) error.getCause()).getHttpCode(), is(403));
+        this.wireMock.verify(1, getRequestedFor(anyUrl()));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     @SuppressWarnings("deprecation")
@@ -424,6 +664,12 @@ public class WGetMojoExecutionTest {
         when(this.archiverManager.getUnArchiver(any(File.class))).thenAnswer(inv -> new ZipUnArchiver());
     }
 
+    private void stubRedirect(final int code) {
+        this.wireMock.stubFor(get(urlEqualTo("/" + code))
+            .willReturn(aResponse().withStatus(code).withHeader("Location", "/redirected")));
+        this.wireMock.stubFor(get(urlEqualTo("/redirected")).willReturn(ok("redirected")));
+    }
+
     private void stubSlowThenFast() {
         this.wireMock.stubFor(get(anyUrl()).inScenario("slow")
             .whenScenarioStateIs(Scenario.STARTED)
@@ -432,6 +678,28 @@ public class WGetMojoExecutionTest {
         this.wireMock.stubFor(get(anyUrl()).inScenario("slow")
             .whenScenarioStateIs("fast")
             .willReturn(ok("fast")));
+    }
+
+    /**
+     * Downloads twice: the first answer is cached, so the second download is served from the cache
+     * although the server would answer differently.
+     * @param first First answer of the server
+     * @throws Exception If a download fails
+     */
+    private void assertServedFromCache(final ResponseDefinitionBuilder first) throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(first));
+        createMojo(m -> { }).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("changed")));
+        cleanOutputDirectory();
+
+        createMojo(m -> { }).execute();
+        this.wireMock.verify(1, getRequestedFor(anyUrl()));
+    }
+
+    private static byte[] randomBytes() {
+        final byte[] bytes = new byte[8 * 1024 * 1024];
+        new Random(42).nextBytes(bytes);
+        return bytes;
     }
 
     private void cleanOutputDirectory() throws Exception {
