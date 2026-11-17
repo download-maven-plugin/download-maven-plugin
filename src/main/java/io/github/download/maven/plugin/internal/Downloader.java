@@ -15,6 +15,7 @@
  */
 package io.github.download.maven.plugin.internal;
 
+import io.github.download.maven.plugin.internal.cache.CachedFileInUseException;
 import io.github.download.maven.plugin.internal.cache.DownloadCache;
 import io.github.download.maven.plugin.internal.cache.Validators;
 import io.github.download.maven.plugin.internal.checksum.ChecksumMismatchException;
@@ -318,7 +319,8 @@ public final class Downloader {
      *
      * <p>The file counts as changed if it wasn't cached before, or if a revalidation brought
      * content that differs from the cached copy. Only a changed file is unpacked with
-     * {@code unpackWhenChanged}.</p>
+     * {@code unpackWhenChanged}. If the cached copy can't be updated, e.g. because another build
+     * reads it on Windows, the downloaded file is used and counts as changed.</p>
      * @param request What to download and how
      * @param cachedFile Cached copy of the file, if it was found in the cache
      * @param fileWasCached Whether the file was in the cache before
@@ -332,10 +334,22 @@ public final class Downloader {
     ) throws DownloadException, IOException {
         final File outputFile = request.outputFile();
         boolean changed = !fileWasCached;
-        if (request.cache().isPresent() && fetched.isPresent()) {
-            changed = request.cache().get().store(request.uri(), outputFile, request.checksums(), fetched.get());
-        } else if (request.cache().isPresent() && changed) {
-            request.cache().get().install(request.uri(), outputFile, request.checksums());
+        Optional<File> source = cachedFile;
+        try {
+            if (request.cache().isPresent() && fetched.isPresent()) {
+                changed = request.cache().get().store(
+                    request.uri(), outputFile, request.checksums(), fetched.get()
+                );
+            } else if (request.cache().isPresent() && changed) {
+                request.cache().get().install(request.uri(), outputFile, request.checksums());
+            }
+        } catch (final CachedFileInUseException ex) {
+            // the cached copy may still be the old one: the downloaded file is what counts
+            this.log.warn(
+                String.format("Could not update the download cache, using the downloaded file: %s", ex.getMessage())
+            );
+            changed = true;
+            source = Optional.empty();
         }
         if (fileWasCached && fetched.isPresent()) {
             this.log.info(
@@ -348,7 +362,7 @@ public final class Downloader {
             if (!request.unpack() && !changed) {
                 this.log.info("Skipping unpacking as the file has not changed");
             } else {
-                this.unpack(request, cachedFile, changed);
+                this.unpack(request, source, changed);
                 this.listener.changed(request.outputDirectory());
             }
             Files.deleteIfExists(outputFile.toPath());

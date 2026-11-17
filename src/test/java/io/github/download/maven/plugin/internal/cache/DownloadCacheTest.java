@@ -187,6 +187,27 @@ public class DownloadCacheTest {
     }
 
     /**
+     * On Windows, a cached file can't be replaced while another build reads it.
+     */
+    @Test
+    public void cachedFileInUseKeepsItsContent() throws Exception {
+        final File dir = this.temporaryFolder.newFolder("cache");
+        final DownloadCache cache = InUseCaches.create(dir, this.log);
+        final Validators validators = new Validators("\"v1\"", null);
+        cache.store(URI_UNDER_TEST, this.source, this.noChecksums, validators);
+        write(this.source, "v2");
+
+        final CachedFileInUseException error = assertThrows(
+            CachedFileInUseException.class,
+            () -> cache.store(URI_UNDER_TEST, this.source, this.noChecksums, new Validators("\"v2\"", null))
+        );
+        assertThat(error.getMessage(), containsString("it is probably in use by another build"));
+        assertThat(read(cache.getArtifact(URI_UNDER_TEST, this.noChecksums)), is("v1"));
+        assertThat(cache.validators(URI_UNDER_TEST), is(validators));
+        assertThat(dir.list((parent, name) -> name.endsWith(".part")).length, is(0));
+    }
+
+    /**
      * The index format is unchanged, so plugin versions that don't know about validators
      * can share the cache: validators live in a separate file.
      */

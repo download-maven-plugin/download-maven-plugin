@@ -22,6 +22,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -70,13 +71,30 @@ public final class DownloadCache {
     private final FileIndex index;
 
     /**
+     * Moves a written temporary file over its target.
+     */
+    private final Mover mover;
+
+    /**
      * Constructor.
      * @param cacheDirectory Directory where the download cache is stored.
      * @param log Logger.
      */
     public DownloadCache(final File cacheDirectory, final Log log) {
+        this(cacheDirectory, log, DownloadCache::move);
+    }
+
+    /**
+     * Constructor.
+     * @param cacheDirectory Directory where the download cache is stored.
+     * @param log Logger.
+     * @param mover Moves a written temporary file over its target, replaced in tests to
+     *  simulate a target that can't be replaced.
+     */
+    DownloadCache(final File cacheDirectory, final Log log, final Mover mover) {
         this.index = new FileBackedIndex(cacheDirectory, log);
         this.basedir = cacheDirectory;
+        this.mover = mover;
     }
 
     /**
@@ -107,6 +125,7 @@ public final class DownloadCache {
      * @param uri The URI of the file to be installed.
      * @param outputFile The file to be installed into the cache.
      * @param checksums The checksums used to verify the integrity of the file.
+     * @throws CachedFileInUseException If a cached file with other content can't be replaced
      * @throws IOException If the cache directory cannot be created or the file can't be copied.
      */
     public void install(final URI uri, final File outputFile, final Checksums checksums)
@@ -154,6 +173,8 @@ public final class DownloadCache {
      * @param validators Validators the server sent with the file.
      * @return True if the cache had no such content for the URI before, i.e. the file is new or
      *  has changed; false if the cached file already had the same content.
+     * @throws CachedFileInUseException If the cached file or its validators can't be replaced,
+     *  e.g. because another build reads them on Windows
      * @throws IOException If the cache directory cannot be created, or the file or its
      *  validators can't be written.
      */
@@ -280,6 +301,8 @@ public final class DownloadCache {
      * sees a partially written file.
      * @param target File to replace.
      * @param writer Writes the new content to the temporary file it is given.
+     * @throws CachedFileInUseException If the existing file can't be replaced, e.g. on Windows
+     *  while another build reads it
      * @throws IOException If the file can't be written.
      */
     private void replace(final Path target, final Writer writer) throws IOException {
@@ -287,14 +310,29 @@ public final class DownloadCache {
         try {
             writer.writeTo(temporary);
             try {
-                Files.move(
-                    temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
-                );
-            } catch (final AtomicMoveNotSupportedException ex) {
-                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+                this.mover.move(temporary, target);
+            } catch (final FileSystemException ex) {
+                if (Files.exists(target)) {
+                    throw new CachedFileInUseException(target, ex);
+                }
+                throw ex;
             }
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    /**
+     * Moves a file over another one, atomically if the file system supports it.
+     * @param source File to move.
+     * @param target File to replace.
+     * @throws IOException If the file can't be moved.
+     */
+    private static void move(final Path source, final Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (final AtomicMoveNotSupportedException ex) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -306,6 +344,21 @@ public final class DownloadCache {
      */
     private static String fileName(final URI uri, final File outputFile) {
         return String.format("%s_%s", outputFile.getName(), DigestUtils.md5Hex(uri.toString()));
+    }
+
+    /**
+     * Moves a file over another one.
+     */
+    @FunctionalInterface
+    interface Mover {
+
+        /**
+         * Moves the file, replacing the target if it exists.
+         * @param source File to move.
+         * @param target File to replace.
+         * @throws IOException If the file can't be moved.
+         */
+        void move(Path source, Path target) throws IOException;
     }
 
     /**

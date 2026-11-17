@@ -1,6 +1,7 @@
 package io.github.download.maven.plugin.internal;
 
 import io.github.download.maven.plugin.internal.cache.DownloadCache;
+import io.github.download.maven.plugin.internal.cache.InUseCaches;
 import io.github.download.maven.plugin.internal.cache.Validators;
 import io.github.download.maven.plugin.internal.checksum.ChecksumMismatchException;
 import io.github.download.maven.plugin.internal.checksum.Checksums;
@@ -459,6 +460,38 @@ public class DownloaderTest {
         assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("archive 2"))), is("archive 2"));
     }
 
+    /**
+     * On Windows, another build reading the cached file prevents replacing it.
+     * The new version must still be unpacked, not the stale cached copy.
+     */
+    @Test
+    public void downloadedFileIsUnpackedWhenCachedFileIsInUse() throws Exception {
+        final DownloadCache cache = InUseCaches.create(this.temporaryFolder.newFolder("in-use"), this.log);
+        this.fetcher.serve(URI_UNDER_TEST, "archive 1");
+        this.fetcher.serve(URI_UNDER_TEST, "archive 2");
+        download(r -> r.cache(cache).unpackWhenChanged(true));
+
+        download(r -> r.cache(cache).unpackWhenChanged(true).revalidate(true));
+        assertThat(this.unpacker.contents, contains("archive 1", "archive 2"));
+        assertThat(this.unpacker.sources.get(1), is(output()));
+        assertThat(output().exists(), is(false));
+        assertThat(read(cache.getArtifact(URI_UNDER_TEST, md5("archive 1"))), is("archive 1"));
+        verify(this.log).warn(startsWith("Could not update the download cache, using the downloaded file: "));
+    }
+
+    @Test
+    public void downloadedFileIsCopiedWhenCachedFileIsInUse() throws Exception {
+        final DownloadCache cache = InUseCaches.create(this.temporaryFolder.newFolder("in-use"), this.log);
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.serve(URI_UNDER_TEST, "v2");
+        download(r -> r.cache(cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(cache).revalidate(true));
+        assertThat(read(output()), is("v2"));
+        assertThat(this.changed, contains(output(), output()));
+    }
+
     @Test
     public void cachedFileIsUsedWhenServerCannotBeAsked() throws Exception {
         this.fetcher.serve(URI_UNDER_TEST, "v1");
@@ -705,9 +738,13 @@ public class DownloaderTest {
 
         private final List<File> sources = new ArrayList<>();
 
+        private final List<String> contents = new ArrayList<>();
+
         @Override
-        public void unpack(final File source, final File outputDirectory, final String outputFileName) {
+        public void unpack(final File source, final File outputDirectory, final String outputFileName)
+            throws IOException {
             this.sources.add(source);
+            this.contents.add(read(source));
         }
     }
 }
