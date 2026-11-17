@@ -28,6 +28,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.shared.utils.io.FileUtils;
@@ -57,6 +58,11 @@ public final class DownloadCache {
      * Key of the size of the cached file the validators belong to.
      */
     private static final String META_SIZE = "size";
+
+    /**
+     * Key of the modification time, in nanoseconds, of the cached file the validators belong to.
+     */
+    private static final String META_MODIFIED = "modified";
 
     /**
      * Directory where the download cache is stored.
@@ -188,10 +194,12 @@ public final class DownloadCache {
             final Optional<String> entry = this.getEntry(uri, checksums);
             final String fileName = entry.orElseGet(() -> DownloadCache.fileName(uri, downloaded));
             final File cached = new File(this.basedir, fileName);
+            // taken before comparing: if another build replaces the file meanwhile, it won't match
+            Stamp stamp = Stamp.read(cached.toPath());
             changed = !entry.isPresent() || cached.length() != downloaded.length()
                 || !FileUtils.contentEquals(cached, downloaded);
             if (changed) {
-                this.replace(
+                stamp = this.replace(
                     cached.toPath(),
                     temporary -> Files.copy(downloaded.toPath(), temporary, StandardCopyOption.REPLACE_EXISTING)
                 );
@@ -200,8 +208,10 @@ public final class DownloadCache {
                 this.index.put(uri, fileName);
             }
             // the content goes first: old validators with new content only cost a download,
-            // new validators with old content would keep the old content forever
-            this.writeMeta(fileName, validators);
+            // new validators with old content would keep the old content forever. The stamp
+            // ties the validators to the file written here: a build in another JVM, which
+            // doesn't share the lock, may have replaced it since.
+            this.writeMeta(fileName, validators, stamp);
         } finally {
             this.index.getLock().unlock();
         }
@@ -248,7 +258,8 @@ public final class DownloadCache {
      * Reads the validators recorded for a cached file.
      * @param resource Name of the cached file.
      * @return Validators, {@link Validators#NONE} if none are recorded, they can't be read or
-     *  they describe a file of another size.
+     *  they describe another file: one of another size or modification time, e.g. written by
+     *  another build or a plugin version that doesn't record validators.
      */
     private Validators readMeta(final String resource) {
         Validators result = Validators.NONE;
@@ -257,14 +268,13 @@ public final class DownloadCache {
             final Properties properties = new Properties();
             try (InputStream input = Files.newInputStream(meta.toPath())) {
                 properties.load(input);
+                if (Stamp.read(new File(this.basedir, resource).toPath()).matches(properties)) {
+                    result = new Validators(
+                        properties.getProperty(META_ETAG), properties.getProperty(META_LAST_MODIFIED)
+                    );
+                }
             } catch (final IOException | IllegalArgumentException ex) {
-                properties.clear();
-            }
-            final String size = String.valueOf(new File(this.basedir, resource).length());
-            if (size.equals(properties.getProperty(META_SIZE))) {
-                result = new Validators(
-                    properties.getProperty(META_ETAG), properties.getProperty(META_LAST_MODIFIED)
-                );
+                result = Validators.NONE;
             }
         }
         return result;
@@ -274,9 +284,11 @@ public final class DownloadCache {
      * Records the validators of a cached file, or removes the record if there are none.
      * @param resource Name of the cached file.
      * @param validators Validators the server sent with the file.
+     * @param stamp Stamp of the file the validators belong to.
      * @throws IOException If the record can't be written.
      */
-    private void writeMeta(final String resource, final Validators validators) throws IOException {
+    private void writeMeta(final String resource, final Validators validators, final Stamp stamp)
+        throws IOException {
         final Path meta = new File(this.basedir, resource + META_SUFFIX).toPath();
         if (validators.isEmpty()) {
             Files.deleteIfExists(meta);
@@ -284,7 +296,7 @@ public final class DownloadCache {
             final Properties properties = new Properties();
             validators.etag().ifPresent(value -> properties.setProperty(META_ETAG, value));
             validators.lastModified().ifPresent(value -> properties.setProperty(META_LAST_MODIFIED, value));
-            properties.setProperty(META_SIZE, String.valueOf(new File(this.basedir, resource).length()));
+            stamp.writeTo(properties);
             this.replace(
                 meta,
                 temporary -> {
@@ -301,14 +313,16 @@ public final class DownloadCache {
      * sees a partially written file.
      * @param target File to replace.
      * @param writer Writes the new content to the temporary file it is given.
+     * @return Stamp of the written file, which the move keeps
      * @throws CachedFileInUseException If the existing file can't be replaced, e.g. on Windows
      *  while another build reads it
      * @throws IOException If the file can't be written.
      */
-    private void replace(final Path target, final Writer writer) throws IOException {
+    private Stamp replace(final Path target, final Writer writer) throws IOException {
         final Path temporary = Files.createTempFile(this.basedir.toPath(), "tmp-", ".part");
         try {
             writer.writeTo(temporary);
+            final Stamp stamp = Stamp.read(temporary);
             try {
                 this.mover.move(temporary, target);
             } catch (final FileSystemException ex) {
@@ -317,6 +331,7 @@ public final class DownloadCache {
                 }
                 throw ex;
             }
+            return stamp;
         } finally {
             Files.deleteIfExists(temporary);
         }
@@ -344,6 +359,70 @@ public final class DownloadCache {
      */
     private static String fileName(final URI uri, final File outputFile) {
         return String.format("%s_%s", outputFile.getName(), DigestUtils.md5Hex(uri.toString()));
+    }
+
+    /**
+     * Size and modification time of a cached file: identifies the content its validators belong to,
+     * without reading it. A move within the cache directory keeps both.
+     */
+    private static final class Stamp {
+
+        /**
+         * Size in bytes.
+         */
+        private final long size;
+
+        /**
+         * Modification time in nanoseconds, as precise as the file system keeps it.
+         */
+        private final long modified;
+
+        /**
+         * Constructor.
+         * @param size Size in bytes.
+         * @param modified Modification time in nanoseconds.
+         */
+        private Stamp(final long size, final long modified) {
+            this.size = size;
+            this.modified = modified;
+        }
+
+        /**
+         * Stamp of a file.
+         * @param file The file.
+         * @return Stamp, of an empty file if it doesn't exist.
+         * @throws IOException If the attributes can't be read.
+         */
+        static Stamp read(final Path file) throws IOException {
+            final Stamp result;
+            if (Files.exists(file)) {
+                result = new Stamp(
+                    Files.size(file), Files.getLastModifiedTime(file).to(TimeUnit.NANOSECONDS)
+                );
+            } else {
+                result = new Stamp(0L, 0L);
+            }
+            return result;
+        }
+
+        /**
+         * Records the stamp.
+         * @param properties Where to record it.
+         */
+        void writeTo(final Properties properties) {
+            properties.setProperty(META_SIZE, String.valueOf(this.size));
+            properties.setProperty(META_MODIFIED, String.valueOf(this.modified));
+        }
+
+        /**
+         * Whether the recorded stamp is this one.
+         * @param properties Where it is recorded.
+         * @return True if both size and modification time match.
+         */
+        boolean matches(final Properties properties) {
+            return String.valueOf(this.size).equals(properties.getProperty(META_SIZE))
+                && String.valueOf(this.modified).equals(properties.getProperty(META_MODIFIED));
+        }
     }
 
     /**
