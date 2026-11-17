@@ -26,9 +26,12 @@ import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.shared.utils.io.FileUtils;
@@ -63,6 +66,18 @@ public final class DownloadCache {
      * Key of the modification time, in nanoseconds, of the cached file the validators belong to.
      */
     private static final String META_MODIFIED = "modified";
+
+    /**
+     * Microseconds over which the modification times of written files are spread, see {@link #mark}.
+     */
+    private static final int SPREAD_MICROS = 10_000;
+
+    /**
+     * Writes of this JVM, from a random start, so that other JVMs likely use other offsets.
+     */
+    private static final AtomicInteger WRITES = new AtomicInteger(
+        ThreadLocalRandom.current().nextInt(DownloadCache.SPREAD_MICROS)
+    );
 
     /**
      * Directory where the download cache is stored.
@@ -322,6 +337,7 @@ public final class DownloadCache {
         final Path temporary = Files.createTempFile(this.basedir.toPath(), "tmp-", ".part");
         try {
             writer.writeTo(temporary);
+            DownloadCache.mark(temporary);
             final Stamp stamp = Stamp.read(temporary);
             try {
                 this.mover.move(temporary, target);
@@ -335,6 +351,20 @@ public final class DownloadCache {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    /**
+     * Gives a written file a modification time that another write is unlikely to share, so
+     * that its {@link Stamp} identifies it. The clock alone doesn't: Windows stamps writes with
+     * a clock that ticks only every few milliseconds, though NTFS keeps 100 ns. The time is
+     * moved forward by up to {@link #SPREAD_MICROS}, distinct for each write of this JVM.
+     * @param file Written file.
+     * @throws IOException If the modification time can't be set.
+     */
+    private static void mark(final Path file) throws IOException {
+        final long micros = TimeUnit.MILLISECONDS.toMicros(System.currentTimeMillis())
+            + Math.floorMod(DownloadCache.WRITES.getAndIncrement(), DownloadCache.SPREAD_MICROS);
+        Files.setLastModifiedTime(file, FileTime.from(micros, TimeUnit.MICROSECONDS));
     }
 
     /**
