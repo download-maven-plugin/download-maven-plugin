@@ -288,6 +288,33 @@ public class WGetMojoExecutionTest {
         verify(this.log).info("Cached file was outdated: downloaded the current version");
     }
 
+    /**
+     * A server answering the update check without a body must not break a build that has
+     * a cached copy, nor replace it with nothing.
+     */
+    @Test
+    public void updatePolicyAlwaysKeepsCachedFileWhenServerAnswersNoContent() throws Exception {
+        assertCachedFileSurvivesEmptyAnswer(aResponse().withStatus(204));
+    }
+
+    @Test
+    public void updatePolicyAlwaysKeepsCachedFileWhenServerAnswersEmptyBody() throws Exception {
+        assertCachedFileSurvivesEmptyAnswer(aResponse().withStatus(200).withBody(new byte[0]));
+    }
+
+    private void assertCachedFileSurvivesEmptyAnswer(final ResponseDefinitionBuilder answer) throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("v1").withHeader("ETag", "\"v1\"")));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(answer));
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        assertThat(read(output()), is("v1"));
+        cleanOutputDirectory();
+        createMojo(m -> { }).execute();
+        assertThat("cached copy", read(output()), is("v1"));
+    }
+
     @Test
     public void updatePolicyAlwaysKeepsUnchangedLargeFile() throws Exception {
         final byte[] large = WGetMojoExecutionTest.randomBytes();

@@ -250,6 +250,9 @@ public final class Downloader {
     /**
      * Asks the server whether the cached copy is still current, if the request wants that.
      *
+     * <p>An answer without content, such as {@code 204 No Content} or an empty body, counts as
+     * no answer: an empty file is not a plausible new version of a cached one.</p>
+     *
      * <p>Nothing is asked when offline. Nothing is asked either when checksums are supplied:
      * they pin the content, so a newer version could only fail the build. A server that can't
      * answer "not modified" sends the file again; whether its content changed is decided when
@@ -274,6 +277,9 @@ public final class Downloader {
                 );
                 if (result.isNotModified()) {
                     this.log.info("Cached file is up to date: not modified on the server");
+                } else if (outputFile.length() == 0L) {
+                    // 204, or an empty 200 (e.g. from a proxy): no reason to drop the cached copy
+                    throw new IOException("the server sent no content");
                 } else {
                     fetched = Optional.of(result.validators());
                 }

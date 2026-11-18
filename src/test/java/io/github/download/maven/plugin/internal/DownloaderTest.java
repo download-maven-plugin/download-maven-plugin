@@ -514,6 +514,34 @@ public class DownloaderTest {
     }
 
     @Test
+    public void cachedFileIsUsedWhenServerSendsNoContent() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.respond(URI_UNDER_TEST, target -> Fetched.content(Validators.NONE));
+        download(r -> r.cache(this.cache));
+        Files.delete(output().toPath());
+
+        download(r -> r.cache(this.cache).revalidate(true));
+        assertThat(read(output()), is("v1"));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("v1"))), is("v1"));
+        verify(this.log).warn(
+            "Could not check " + URI_UNDER_TEST + " for a newer version, using the cached file: the server sent no content"
+        );
+    }
+
+    @Test
+    public void cachedFileIsUsedWhenServerSendsEmptyFile() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.serve(URI_UNDER_TEST, "");
+        download(r -> r.cache(this.cache).unpackWhenChanged(true));
+        this.unpacker.sources.clear();
+
+        download(r -> r.cache(this.cache).unpackWhenChanged(true).revalidate(true));
+        assertThat(this.unpacker.sources, is(empty()));
+        assertThat(output().exists(), is(false));
+        assertThat(read(this.cache.getArtifact(URI_UNDER_TEST, md5("v1"))), is("v1"));
+    }
+
+    @Test
     public void cachedFileIsUsedWhenServerAnswersWithServerError() throws Exception {
         this.fetcher.serve(URI_UNDER_TEST, "v1");
         this.fetcher.fail(URI_UNDER_TEST, new DownloadFailureException(503, "Unavailable"));
