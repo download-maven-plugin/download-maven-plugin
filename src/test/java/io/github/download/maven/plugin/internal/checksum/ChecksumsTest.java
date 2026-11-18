@@ -3,17 +3,18 @@ package io.github.download.maven.plugin.internal.checksum;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFile;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -26,16 +27,16 @@ public class ChecksumsTest {
 
     private static final byte[] CONTENT = "Hello, world!".getBytes(StandardCharsets.UTF_8);
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private File file;
 
     private Log log;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
-        this.file = this.temporaryFolder.newFile();
+        this.file = newFile(this.tempDir);
         Files.write(this.file.toPath(), CONTENT);
         this.log = mock(Log.class);
     }
@@ -87,6 +88,6 @@ public class ChecksumsTest {
     @Test
     public void missingFileIsInvalid() {
         final Checksums checksums = new Checksums(DigestUtils.md5Hex(CONTENT), null, null, null, this.log);
-        assertThat(checksums.isValid(new File(this.temporaryFolder.getRoot(), "absent")), is(false));
+        assertThat(checksums.isValid(new File(this.tempDir.toFile(), "absent")), is(false));
     }
 }

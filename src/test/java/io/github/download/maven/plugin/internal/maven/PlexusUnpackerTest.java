@@ -6,21 +6,23 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.zip.GZIPOutputStream;
 import org.codehaus.plexus.archiver.gzip.GZipUnArchiver;
 import org.codehaus.plexus.archiver.manager.ArchiverManager;
 import org.codehaus.plexus.archiver.manager.NoSuchArchiverException;
 import org.codehaus.plexus.archiver.zip.ZipUnArchiver;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFile;
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.startsWith;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -30,17 +32,17 @@ import static org.mockito.Mockito.when;
  */
 public class PlexusUnpackerTest {
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private ArchiverManager archivers;
 
     private File outputDirectory;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         this.archivers = mock(ArchiverManager.class);
-        this.outputDirectory = this.temporaryFolder.newFolder("out");
+        this.outputDirectory = newFolder(this.tempDir, "out");
     }
 
     @Test
@@ -66,7 +68,7 @@ public class PlexusUnpackerTest {
         try (GZIPOutputStream gzip = new GZIPOutputStream(bytes)) {
             gzip.write("plain".getBytes(StandardCharsets.UTF_8));
         }
-        final File source = this.temporaryFolder.newFile("source.gz");
+        final File source = newFile(this.tempDir, "source.gz");
         Files.write(source.toPath(), bytes.toByteArray());
         when(this.archivers.getUnArchiver(any(File.class))).thenAnswer(inv -> new GZipUnArchiver());
 
@@ -81,13 +83,13 @@ public class PlexusUnpackerTest {
         final DownloadException error = assertThrows(
             DownloadException.class,
             () -> new PlexusUnpacker(this.archivers, null, null, null)
-                .unpack(this.temporaryFolder.newFile(), this.outputDirectory, "file.bin")
+                .unpack(newFile(this.tempDir), this.outputDirectory, "file.bin")
         );
         assertThat(error.getMessage(), startsWith("No such archiver"));
     }
 
     private File zip() throws Exception {
-        final File zip = this.temporaryFolder.newFile("source.zip");
+        final File zip = newFile(this.tempDir, "source.zip");
         Files.write(zip.toPath(), TestFiles.zip("a.txt", "a", "dir/b.txt", "b"));
         when(this.archivers.getUnArchiver(any(File.class))).thenAnswer(inv -> new ZipUnArchiver());
         return zip;

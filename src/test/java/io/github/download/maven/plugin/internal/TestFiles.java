@@ -18,6 +18,27 @@ public final class TestFiles {
     }
 
     /**
+     * Creates an empty file with a unique name in the directory.
+     */
+    public static File newFile(final Path dir) throws IOException {
+        return Files.createTempFile(dir, "junit", null).toFile();
+    }
+
+    /**
+     * Creates an empty file in the directory, failing if it already exists.
+     */
+    public static File newFile(final Path dir, final String name) throws IOException {
+        return Files.createFile(dir.resolve(name)).toFile();
+    }
+
+    /**
+     * Creates a subdirectory, failing if it already exists.
+     */
+    public static File newFolder(final Path dir, final String name) throws IOException {
+        return Files.createDirectory(dir.resolve(name)).toFile();
+    }
+
+    /**
      * Reads the whole file as text, line breaks included.
      */
     public static String read(final File file) throws IOException {

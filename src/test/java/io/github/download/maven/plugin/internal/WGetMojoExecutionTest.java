@@ -2,7 +2,7 @@ package io.github.download.maven.plugin.internal;
 
 import com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder;
 import com.github.tomakehurst.wiremock.http.Fault;
-import com.github.tomakehurst.wiremock.junit.WireMockRule;
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import java.io.File;
 import java.net.URI;
@@ -26,10 +26,10 @@ import org.codehaus.plexus.archiver.manager.ArchiverManager;
 import org.codehaus.plexus.archiver.zip.ZipUnArchiver;
 import org.eclipse.aether.DefaultRepositorySystemSession;
 import org.eclipse.aether.util.repository.AuthenticationBuilder;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 import org.sonatype.plexus.build.incremental.BuildContext;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -46,6 +46,8 @@ import static com.github.tomakehurst.wiremock.client.WireMock.unauthorized;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static io.github.download.maven.plugin.internal.Fields.set;
+import static io.github.download.maven.plugin.internal.TestFiles.newFile;
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -53,7 +55,7 @@ import static org.hamcrest.Matchers.emptyArray;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.mockito.ArgumentMatchers.startsWith;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -68,11 +70,14 @@ public class WGetMojoExecutionTest {
 
     private static final String OUTPUT_FILE_NAME = "output-file";
 
-    @Rule
-    public WireMockRule wireMock = new WireMockRule(options().dynamicPort());
+    @RegisterExtension
+    public WireMockExtension wireMock = WireMockExtension.newInstance()
+        .options(options().dynamicPort())
+        .failOnUnmatchedRequests(true)
+        .build();
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private Path cacheDirectory;
 
@@ -88,10 +93,10 @@ public class WGetMojoExecutionTest {
 
     private DefaultRepositorySystemSession repositorySession;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
-        this.cacheDirectory = this.temporaryFolder.newFolder("cache").toPath();
-        this.outputDirectory = this.temporaryFolder.newFolder("out").toPath();
+        this.cacheDirectory = newFolder(this.tempDir, "cache").toPath();
+        this.outputDirectory = newFolder(this.tempDir, "out").toPath();
         this.log = mock(Log.class);
         this.buildContext = mock(BuildContext.class);
         this.archiverManager = mock(ArchiverManager.class);
@@ -166,7 +171,7 @@ public class WGetMojoExecutionTest {
     @Test
     public void cacheDefaultsToLocalRepository() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        final File localRepo = this.temporaryFolder.newFolder("repo");
+        final File localRepo = newFolder(this.tempDir, "repo");
         final ArtifactRepository repository = mock(ArtifactRepository.class);
         when(repository.getBasedir()).thenReturn(localRepo.getAbsolutePath());
         when(this.request.getLocalRepository()).thenReturn(repository);
@@ -179,7 +184,7 @@ public class WGetMojoExecutionTest {
 
     @Test
     public void outputDirectoryMustBeADirectory() throws Exception {
-        final File file = this.temporaryFolder.newFile("not-a-dir");
+        final File file = newFile(this.tempDir, "not-a-dir");
         final MojoExecutionException error = assertThrows(
             MojoExecutionException.class,
             () -> createMojo(m -> set(m, "outputDirectory", file)).execute()
@@ -226,7 +231,7 @@ public class WGetMojoExecutionTest {
 
     @Test
     public void cacheDirectoryMustBeADirectory() throws Exception {
-        final File notADirectory = this.temporaryFolder.newFile("not-a-directory");
+        final File notADirectory = newFile(this.tempDir, "not-a-directory");
         final MojoFailureException error = assertThrows(
             MojoFailureException.class,
             () -> createMojo(m -> set(m, "cacheDirectory", notADirectory)).execute()
@@ -384,9 +389,9 @@ public class WGetMojoExecutionTest {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
         for (final String parameter : new String[] {"md5", "sha1", "sha256", "sha512"}) {
             final MojoExecutionException error = assertThrows(
-                parameter,
                 MojoExecutionException.class,
-                () -> createMojo(m -> set(m, parameter, "wrong")).execute()
+                () -> createMojo(m -> set(m, parameter, "wrong")).execute(),
+                parameter
             );
             assertThat(parameter, error.getCause().getMessage(), containsString("Not same digest as expected"));
             assertThat(parameter, this.outputDirectory.toFile().list(), is(emptyArray()));
@@ -643,7 +648,7 @@ public class WGetMojoExecutionTest {
     @Test
     public void localIoFailureIsReportedAsIoError() throws Exception {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok("content")));
-        final File blocker = this.temporaryFolder.newFile("blocker");
+        final File blocker = newFile(this.tempDir, "blocker");
         final MojoExecutionException error = assertThrows(
             MojoExecutionException.class,
             () -> createMojo(m -> set(m, "cacheDirectory", new File(blocker, "cache"))).execute()
