@@ -26,7 +26,9 @@ import io.github.resilience4j.retry.RetryConfig;
 import io.github.resilience4j.retry.RetryRegistry;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
@@ -205,43 +207,52 @@ public final class Downloader {
 
     /**
      * Fetches the file with retries and verifies its checksums.
+     *
+     * <p>The file is downloaded next to the output file and only moved in place once it is
+     * complete and verified, so that a failed or interrupted download leaves no broken output
+     * file behind: the next build would take it as already downloaded.</p>
      * @param request What to download and how
      * @return Validators of the downloaded file, empty if a failure was ignored
      * @throws DownloadException If the download fails and {@code failOnError} is set,
      *  or regardless of it on checksum mismatch or misconfiguration
+     * @throws IOException If a partially downloaded file can't be removed
      */
     @SuppressWarnings("checkstyle:IllegalCatch")
-    private Optional<Validators> fetch(final DownloadRequest request) throws DownloadException {
+    private Optional<Validators> fetch(final DownloadRequest request) throws DownloadException, IOException {
         Optional<Validators> fetched = Optional.empty();
         if (request.offline()) {
             this.fail(request, "No file in cache and maven is in offline mode");
             this.log.warn("Ignoring download failure.");
         } else {
-            final File outputFile = request.outputFile();
+            final File partFile = Downloader.partFile(request);
             final Checksums checksums = request.checksums();
             try {
                 fetched = Optional.of(
                     this.retry(request.retryPolicy()).executeCheckedSupplier(
                         () -> {
-                            final Fetched result = this.fetcher.fetch(request.uri(), outputFile, Validators.NONE);
+                            final Fetched result = this.fetcher.fetch(request.uri(), partFile, Validators.NONE);
                             if (result.isNotModified()) {
                                 // only possible with conditional headers configured on the plugin
                                 throw new IOException(
                                     "Server answered 304 Not Modified, but there is no cached copy to use"
                                 );
                             }
-                            checksums.validate(outputFile);
+                            checksums.validate(partFile);
                             return result.validators();
                         }
                     )
                 );
+                Downloader.moveInPlace(partFile, request.outputFile());
             } catch (final DownloadException ex) {
                 throw ex;
             } catch (final Throwable ex) {
+                fetched = Optional.empty();
                 if (request.failOnError()) {
                     throw new DownloadException(ex.getMessage(), ex);
                 }
                 this.log.warn(ex.getMessage());
+            } finally {
+                Files.deleteIfExists(partFile.toPath());
             }
         }
         return fetched;
@@ -269,24 +280,24 @@ public final class Downloader {
     private Optional<Validators> revalidate(final DownloadRequest request) throws DownloadException, IOException {
         Optional<Validators> fetched = Optional.empty();
         if (request.revalidate() && !request.offline() && request.checksums().isEmpty()) {
-            final File outputFile = request.outputFile();
+            final File partFile = Downloader.partFile(request);
             try {
                 final Validators known = request.cache().get().validators(request.uri());
                 final Fetched result = this.retry(request.retryPolicy()).executeCheckedSupplier(
-                    () -> this.fetcher.fetch(request.uri(), outputFile, known)
+                    () -> this.fetcher.fetch(request.uri(), partFile, known)
                 );
                 if (result.isNotModified()) {
                     this.log.info("Cached file is up to date: not modified on the server");
-                } else if (outputFile.length() == 0L) {
+                } else if (partFile.length() == 0L) {
                     // 204, or an empty 200 (e.g. from a proxy): no reason to drop the cached copy
                     throw new IOException("the server sent no content");
                 } else {
+                    Downloader.moveInPlace(partFile, request.outputFile());
                     fetched = Optional.of(result.validators());
                 }
             } catch (final DownloadException ex) {
                 throw ex;
             } catch (final Throwable ex) {
-                Files.deleteIfExists(outputFile.toPath());
                 if (request.failOnError() && Downloader.rejected(ex)) {
                     throw new DownloadException(ex.getMessage(), ex);
                 }
@@ -296,9 +307,40 @@ public final class Downloader {
                         request.uri(), ex.getMessage()
                     )
                 );
+            } finally {
+                Files.deleteIfExists(partFile.toPath());
             }
         }
         return fetched;
+    }
+
+    /**
+     * File the download is written to until it is complete, next to the output file so that
+     * moving it in place is a rename.
+     * @param request What to download and how
+     * @return Partial file
+     */
+    private static File partFile(final DownloadRequest request) {
+        final File outputFile = request.outputFile();
+        return new File(outputFile.getParentFile(), outputFile.getName() + ".part");
+    }
+
+    /**
+     * Moves a complete download in place of the output file, atomically if the file system
+     * supports it.
+     * @param partFile Complete download
+     * @param outputFile Output file
+     * @throws IOException If the file can't be moved
+     */
+    private static void moveInPlace(final File partFile, final File outputFile) throws IOException {
+        try {
+            Files.move(
+                partFile.toPath(), outputFile.toPath(),
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
+            );
+        } catch (final AtomicMoveNotSupportedException ex) {
+            Files.move(partFile.toPath(), outputFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /**

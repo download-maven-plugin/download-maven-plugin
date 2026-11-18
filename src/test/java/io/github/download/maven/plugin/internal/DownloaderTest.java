@@ -33,6 +33,7 @@ import static io.github.download.maven.plugin.internal.TestFiles.write;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.emptyArray;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertThrows;
@@ -284,6 +285,67 @@ public class DownloaderTest {
         }
         verify(this.log).warn(startsWith("Could not acquire lock for File"));
         assertThat(this.fetcher.requests, is(empty()));
+    }
+
+    /**
+     * Issue #331: a transfer cut off mid-way must not leave a broken file that the next build
+     * takes as already downloaded.
+     */
+    @Test
+    public void cutOffDownloadLeavesNoFile() throws Exception {
+        this.fetcher.respond(URI_UNDER_TEST, DownloaderTest::cutOff);
+        this.fetcher.serve(URI_UNDER_TEST, "complete");
+        assertThrows(DownloadException.class, () -> download(r -> { }));
+        assertThat(this.outputDirectory.list(), is(emptyArray()));
+
+        download(r -> { });
+        assertThat(read(output()), is("complete"));
+    }
+
+    @Test
+    public void ignoredCutOffDownloadLeavesNoFile() throws Exception {
+        this.fetcher.respond(URI_UNDER_TEST, DownloaderTest::cutOff);
+        download(r -> r.failOnError(false));
+        assertThat(this.outputDirectory.list(), is(emptyArray()));
+        assertThat(this.changed, is(empty()));
+    }
+
+    @Test
+    public void downloadFailingItsChecksumLeavesNoFile() {
+        this.fetcher.serve(URI_UNDER_TEST, "corrupted");
+        assertThrows(ChecksumMismatchException.class, () -> download(r -> r.checksums(md5("expected"))));
+        assertThat(this.outputDirectory.list(), is(emptyArray()));
+    }
+
+    /**
+     * A build killed during the transfer can't clean up: the output file must only appear
+     * once the download is complete.
+     */
+    @Test
+    public void outputFileAppearsOnlyWhenDownloadIsComplete() throws Exception {
+        final List<Boolean> existedDuringTransfer = new ArrayList<>();
+        this.fetcher.respond(
+            URI_UNDER_TEST,
+            target -> {
+                write(target, "content");
+                existedDuringTransfer.add(output().exists());
+                return Fetched.content(Validators.NONE);
+            }
+        );
+        download(r -> { });
+        assertThat(existedDuringTransfer, contains(false));
+        assertThat(read(output()), is("content"));
+    }
+
+    @Test
+    public void cutOffRevalidationLeavesNoFile() throws Exception {
+        this.fetcher.serve(URI_UNDER_TEST, "v1");
+        this.fetcher.respond(URI_UNDER_TEST, DownloaderTest::cutOff);
+        download(r -> r.cache(this.cache).unpack(true));
+
+        download(r -> r.cache(this.cache).unpack(true).revalidate(true));
+        assertThat(this.outputDirectory.list(), is(emptyArray()));
+        assertThat(this.unpacker.contents, contains("v1", "v1"));
     }
 
     // ---------------------------------------------------------------- retries
@@ -651,6 +713,11 @@ public class DownloaderTest {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    private static Fetched cutOff(final File target) throws IOException {
+        write(target, "partial");
+        throw new IOException("Premature end of Content-Length delimited message body (expected: 100; received: 7)");
+    }
 
     private void download(final Consumer<DownloadRequest.Builder> customizer) throws Exception {
         final DownloadRequest.Builder builder = new DownloadRequest.Builder()

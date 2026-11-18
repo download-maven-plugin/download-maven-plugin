@@ -1,6 +1,7 @@
 package io.github.download.maven.plugin.internal;
 
 import com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder;
+import com.github.tomakehurst.wiremock.http.Fault;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import java.io.File;
@@ -385,14 +386,25 @@ public class WGetMojoExecutionTest {
             final MojoExecutionException error = assertThrows(
                 parameter,
                 MojoExecutionException.class,
-                () -> createMojo(m -> {
-                    // a failed download leaves the file behind
-                    set(m, "overwrite", true);
-                    set(m, parameter, "wrong");
-                }).execute()
+                () -> createMojo(m -> set(m, parameter, "wrong")).execute()
             );
             assertThat(parameter, error.getCause().getMessage(), containsString("Not same digest as expected"));
+            assertThat(parameter, this.outputDirectory.toFile().list(), is(emptyArray()));
         }
+    }
+
+    /**
+     * Issue #331: the next build must download again, not skip the broken file.
+     */
+    @Test
+    public void nextBuildDownloadsAgainAfterTransferWasCutOff() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(aResponse().withFault(Fault.MALFORMED_RESPONSE_CHUNK)));
+        assertThrows(MojoExecutionException.class, () -> createMojo(m -> { }).execute());
+        assertThat(this.outputDirectory.toFile().list(), is(emptyArray()));
+
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("complete")));
+        createMojo(m -> { }).execute();
+        assertThat(read(output()), is("complete"));
     }
 
     @Test
