@@ -77,8 +77,8 @@ and it only counts as changed if its content differs from the cached copy.
   sends the whole file on every build. The same happens once for files cached by plugin versions
   before 2.2.0, which didn't record these headers.
 
-* If the server can't be reached, answers with a server error (`5xx`) or with `429 Too Many Requests`,
-  the cached file is used and a warning is logged.
+* If the server can't be reached, answers with a server error (`5xx`), with `429 Too Many Requests`
+  or without content (`204`, or an empty body), the cached file is used and a warning is logged.
 * If the server refuses the request (`4xx`, e.g. the file is gone or the credentials expired),
   the build fails, unless `failOnError` is `false`: then the cached file is used and a warning is logged.
 * No request is made in offline mode, or when a checksum (`md5`, `sha1`, `sha256`, `sha512`) is configured,

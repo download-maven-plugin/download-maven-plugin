@@ -1,6 +1,7 @@
 package io.github.download.maven.plugin.internal;
 
 import com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder;
+import com.github.tomakehurst.wiremock.http.Fault;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import java.io.File;
@@ -288,6 +289,33 @@ public class WGetMojoExecutionTest {
         verify(this.log).info("Cached file was outdated: downloaded the current version");
     }
 
+    /**
+     * A server answering the update check without a body must not break a build that has
+     * a cached copy, nor replace it with nothing.
+     */
+    @Test
+    public void updatePolicyAlwaysKeepsCachedFileWhenServerAnswersNoContent() throws Exception {
+        assertCachedFileSurvivesEmptyAnswer(aResponse().withStatus(204));
+    }
+
+    @Test
+    public void updatePolicyAlwaysKeepsCachedFileWhenServerAnswersEmptyBody() throws Exception {
+        assertCachedFileSurvivesEmptyAnswer(aResponse().withStatus(200).withBody(new byte[0]));
+    }
+
+    private void assertCachedFileSurvivesEmptyAnswer(final ResponseDefinitionBuilder answer) throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("v1").withHeader("ETag", "\"v1\"")));
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        this.wireMock.stubFor(get(anyUrl()).willReturn(answer));
+        cleanOutputDirectory();
+
+        createMojo(m -> set(m, "updatePolicy", "always")).execute();
+        assertThat(read(output()), is("v1"));
+        cleanOutputDirectory();
+        createMojo(m -> { }).execute();
+        assertThat("cached copy", read(output()), is("v1"));
+    }
+
     @Test
     public void updatePolicyAlwaysKeepsUnchangedLargeFile() throws Exception {
         final byte[] large = WGetMojoExecutionTest.randomBytes();
@@ -358,14 +386,25 @@ public class WGetMojoExecutionTest {
             final MojoExecutionException error = assertThrows(
                 parameter,
                 MojoExecutionException.class,
-                () -> createMojo(m -> {
-                    // a failed download leaves the file behind
-                    set(m, "overwrite", true);
-                    set(m, parameter, "wrong");
-                }).execute()
+                () -> createMojo(m -> set(m, parameter, "wrong")).execute()
             );
             assertThat(parameter, error.getCause().getMessage(), containsString("Not same digest as expected"));
+            assertThat(parameter, this.outputDirectory.toFile().list(), is(emptyArray()));
         }
+    }
+
+    /**
+     * Issue #331: the next build must download again, not skip the broken file.
+     */
+    @Test
+    public void nextBuildDownloadsAgainAfterTransferWasCutOff() throws Exception {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(aResponse().withFault(Fault.MALFORMED_RESPONSE_CHUNK)));
+        assertThrows(MojoExecutionException.class, () -> createMojo(m -> { }).execute());
+        assertThat(this.outputDirectory.toFile().list(), is(emptyArray()));
+
+        this.wireMock.stubFor(get(anyUrl()).willReturn(ok("complete")));
+        createMojo(m -> { }).execute();
+        assertThat(read(output()), is("complete"));
     }
 
     @Test
