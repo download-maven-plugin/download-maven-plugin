@@ -20,16 +20,17 @@ import java.io.ObjectInputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.apache.maven.plugin.logging.SystemStreamLog;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.is;
@@ -45,12 +46,12 @@ public class FileBackedIndexMultiProcessTest {
 
     private static final int ENTRIES = 50;
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     @Test
     public void concurrentProcessesDoNotCorruptOrLoseIndexEntries() throws Exception {
-        final File dir = this.temporaryFolder.newFolder("cache");
+        final File dir = newFolder(this.tempDir, "cache");
         final String java = Paths.get(System.getProperty("java.home"), "bin", "java").toString();
         final List<Process> processes = new ArrayList<>();
         for (int id = 0; id < PROCESSES; ++id) {
@@ -100,7 +101,7 @@ public class FileBackedIndexMultiProcessTest {
     }
 
     private File log(final int id) {
-        return new File(this.temporaryFolder.getRoot(), "worker-" + id + ".log");
+        return new File(this.tempDir.toFile(), "worker-" + id + ".log");
     }
 
     /**

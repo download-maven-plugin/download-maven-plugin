@@ -1,15 +1,15 @@
 package io.github.download.maven.plugin.internal;
 
 import com.github.tomakehurst.wiremock.http.Fault;
-import com.github.tomakehurst.wiremock.junit.WireMockRule;
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import javax.net.ssl.SSLHandshakeException;
 import org.apache.http.auth.AUTH;
 import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.plugin.logging.SystemStreamLog;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import io.github.download.maven.plugin.internal.cache.Validators;
 import org.apache.http.message.BasicHeader;
@@ -29,8 +30,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.startsWith;
-import static org.junit.Assert.fail;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -42,17 +43,20 @@ import static org.mockito.Mockito.verify;
  * @author Andrzej Jarmoniuk
  */
 public class HttpFileRequesterTest {
-    @Rule
-    public TemporaryFolder outputDirectory = new TemporaryFolder();
-    @Rule
-    public WireMockRule wireMock = new WireMockRule(options().dynamicPort().dynamicHttpsPort());
+    @TempDir
+    public Path outputDirectory;
+    @RegisterExtension
+    public WireMockExtension wireMock = WireMockExtension.newInstance()
+        .options(options().dynamicPort().dynamicHttpsPort())
+        .failOnUnmatchedRequests(true)
+        .build();
     private File outputFile;
     private final static Log LOG = new SystemStreamLog();
     private final static String OUTPUT_FILE_NAME = "output-file";
 
-    @Before
+    @BeforeEach
     public void setUp() {
-        this.outputFile = new File(this.outputDirectory.getRoot(), OUTPUT_FILE_NAME);
+        this.outputFile = new File(this.outputDirectory.toFile(), OUTPUT_FILE_NAME);
     }
 
     private HttpFileRequester.Builder createFileRequesterBuilder() throws Exception {
@@ -61,7 +65,7 @@ public class HttpFileRequesterTest {
                 .withProgressReport(new LoggingProgressReport(LOG))
                 .withConnectTimeout(3000)
                 .withSocketTimeout(3000)
-                .withUri(new URI("http://localhost:" + this.wireMock.port()))
+                .withUri(new URI("http://localhost:" + this.wireMock.getPort()))
                 .withRedirectsEnabled(false)
                 .withPreemptiveAuth(false)
                 .withLog(LOG);
@@ -93,7 +97,7 @@ public class HttpFileRequesterTest {
 
         createFileRequesterBuilder()
             .withInsecure(true)
-            .withUri(new URI("https://localhost:" + wireMock.httpsPort()))
+            .withUri(new URI("https://localhost:" + wireMock.getHttpsPort()))
             .build()
             .download(this.outputFile, emptyList());
 
@@ -108,7 +112,7 @@ public class HttpFileRequesterTest {
         assertThrows(SSLHandshakeException.class, ()->{
             createFileRequesterBuilder()
                 .withInsecure(false)
-                .withUri(new URI("https://localhost:" + wireMock.httpsPort()))
+                .withUri(new URI("https://localhost:" + wireMock.getHttpsPort()))
                 .build()
                 .download(this.outputFile, emptyList());
         });
@@ -186,7 +190,7 @@ public class HttpFileRequesterTest {
 
         createFileRequesterBuilder()
                 .withUri(new URI("http://target.invalid/file"))
-                .withProxy(new ProxySettings("localhost", this.wireMock.port()))
+                .withProxy(new ProxySettings("localhost", this.wireMock.getPort()))
                 .build()
                 .download(this.outputFile, emptyList());
 
@@ -209,7 +213,7 @@ public class HttpFileRequesterTest {
 
         createFileRequesterBuilder()
                 .withUri(new URI("http://target.invalid/file"))
-                .withProxy(new ProxySettings("localhost", this.wireMock.port(),
+                .withProxy(new ProxySettings("localhost", this.wireMock.getPort(),
                     new UserCredentials("puser", "ppass")))
                 .build()
                 .download(this.outputFile, emptyList());
@@ -229,7 +233,7 @@ public class HttpFileRequesterTest {
             DownloadFailureException.class,
             () -> createFileRequesterBuilder()
                 .withUri(new URI("http://target.invalid/file"))
-                .withProxy(new ProxySettings("localhost", this.wireMock.port(),
+                .withProxy(new ProxySettings("localhost", this.wireMock.getPort(),
                     new UserCredentials("puser", null)))
                 .build()
                 .download(this.outputFile, emptyList())
@@ -283,11 +287,11 @@ public class HttpFileRequesterTest {
                 .withStatus(code).withBody("<html>Moved</html>")));
 
             final DownloadFailureException error = assertThrows(
-                "redirect " + code,
                 DownloadFailureException.class,
                 () -> createFileRequesterBuilder()
                     .build()
-                    .download(this.outputFile, emptyList())
+                    .download(this.outputFile, emptyList()),
+                "redirect " + code
             );
             assertThat("redirect " + code, error.getHttpCode(), is(code));
             assertThat("redirect " + code, error.getMessage(), containsString("followRedirects is false"));
@@ -332,7 +336,7 @@ public class HttpFileRequesterTest {
             .willReturn(ok().withBody("with cookie")));
 
         createFileRequesterBuilder()
-            .withUri(new URI("http://localhost:" + this.wireMock.port() + "/start"))
+            .withUri(new URI("http://localhost:" + this.wireMock.getPort() + "/start"))
             .withRedirectsEnabled(true)
             .build()
             .download(this.outputFile, emptyList());
@@ -368,7 +372,7 @@ public class HttpFileRequesterTest {
         this.wireMock.stubFor(get(anyUrl()).willReturn(ok().withBody("Hello, query!")));
 
         createFileRequesterBuilder()
-                .withUri(new URI("http://localhost:" + this.wireMock.port() + "/?query=value"))
+                .withUri(new URI("http://localhost:" + this.wireMock.getPort() + "/?query=value"))
                 .build()
                 .download(this.outputFile, emptyList());
 
@@ -387,7 +391,7 @@ public class HttpFileRequesterTest {
                     .willReturn(aResponse().withStatus(code).withHeader("Location", "/new")));
 
             createFileRequesterBuilder()
-                    .withUri(new URI("http://localhost:" + this.wireMock.port() + "/" + code))
+                    .withUri(new URI("http://localhost:" + this.wireMock.getPort() + "/" + code))
                     .withRedirectsEnabled(true)
                     .build()
                     .download(this.outputFile, emptyList());
@@ -448,7 +452,7 @@ public class HttpFileRequesterTest {
             .withHeader("If-None-Match", matching("\"v2.*"))
             .willReturn(aResponse().withStatus(304)));
         final HttpFileRequester requester = createFileRequesterBuilder()
-            .withUri(new URI("http://localhost:" + this.wireMock.port() + "/latest"))
+            .withUri(new URI("http://localhost:" + this.wireMock.getPort() + "/latest"))
             .withRedirectsEnabled(true)
             .build();
 

@@ -18,14 +18,14 @@ import org.eclipse.aether.repository.Proxy;
 import org.eclipse.aether.transfer.AbstractTransferListener;
 import org.eclipse.aether.util.repository.AuthenticationBuilder;
 import org.eclipse.aether.util.repository.DefaultProxySelector;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.startsWith;
@@ -48,7 +48,7 @@ public class MavenEnvironmentTest {
 
     private Log log;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         this.request = mock(MavenExecutionRequest.class);
         this.repositorySession = new DefaultRepositorySystemSession();

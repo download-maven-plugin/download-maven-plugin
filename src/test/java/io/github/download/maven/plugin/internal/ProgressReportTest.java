@@ -3,8 +3,8 @@ package io.github.download.maven.plugin.internal;
 import java.io.IOException;
 import java.net.URI;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
 import static org.mockito.Mockito.inOrder;
@@ -21,7 +21,7 @@ public class ProgressReportTest {
 
     private Log log;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         this.log = mock(Log.class);
     }

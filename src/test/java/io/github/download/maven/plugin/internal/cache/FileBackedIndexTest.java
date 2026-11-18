@@ -4,12 +4,13 @@ import java.io.File;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
@@ -26,16 +27,16 @@ public class FileBackedIndexTest {
 
     private static final URI SECOND = URI.create("http://example.invalid/second");
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private File dir;
 
     private Log log;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
-        this.dir = this.temporaryFolder.newFolder("cache");
+        this.dir = newFolder(this.tempDir, "cache");
         this.log = mock(Log.class);
     }
 

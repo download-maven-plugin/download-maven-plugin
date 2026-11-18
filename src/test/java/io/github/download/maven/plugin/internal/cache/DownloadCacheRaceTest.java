@@ -4,13 +4,15 @@ import io.github.download.maven.plugin.internal.checksum.Checksums;
 import java.io.File;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.Rule;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFile;
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static io.github.download.maven.plugin.internal.TestFiles.write;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -26,8 +28,8 @@ public class DownloadCacheRaceTest {
 
     private static final URI URI_UNDER_TEST = URI.create("http://example.invalid/latest/tool.zip");
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     /**
      * Build A downloaded the new version v2, build B the old version v1 (it started earlier,
@@ -55,13 +57,13 @@ public class DownloadCacheRaceTest {
     private void assertValidatorsBelongToCachedContent(final String versionOfB) throws Exception {
         final Log log = mock(Log.class);
         final Checksums none = new Checksums(null, null, null, null, log);
-        final File dir = this.temporaryFolder.newFolder("cache");
-        final File old = this.temporaryFolder.newFile("old");
+        final File dir = newFolder(this.tempDir, "cache");
+        final File old = newFile(this.tempDir, "old");
         write(old, "v0");
         new DownloadCache(dir, log).store(URI_UNDER_TEST, old, none, new Validators("\"v0\"", null));
 
         final DownloadCache buildB = new DownloadCache(dir, log);
-        final File fromB = this.temporaryFolder.newFile("from-b");
+        final File fromB = newFile(this.tempDir, "from-b");
         write(fromB, versionOfB);
         final AtomicBoolean interleaved = new AtomicBoolean();
         final DownloadCache buildA = new DownloadCache(
@@ -73,7 +75,7 @@ public class DownloadCacheRaceTest {
                 }
             }
         );
-        final File fromA = this.temporaryFolder.newFile("from-a");
+        final File fromA = newFile(this.tempDir, "from-a");
         write(fromA, "v2");
         buildA.store(URI_UNDER_TEST, fromA, none, new Validators("\"v2\"", null));
 

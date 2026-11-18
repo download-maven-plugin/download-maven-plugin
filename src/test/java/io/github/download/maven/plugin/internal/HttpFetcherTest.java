@@ -1,17 +1,18 @@
 package io.github.download.maven.plugin.internal;
 
-import com.github.tomakehurst.wiremock.junit.WireMockRule;
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import io.github.download.maven.plugin.internal.cache.Validators;
 import java.io.File;
+import java.nio.file.Path;
 import java.net.URI;
 import java.util.Collections;
 import java.util.Optional;
 import org.apache.http.message.BasicHeader;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
@@ -25,7 +26,7 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -36,11 +37,14 @@ import static org.mockito.Mockito.verify;
  */
 public class HttpFetcherTest {
 
-    @Rule
-    public WireMockRule wireMock = new WireMockRule(options().dynamicPort());
+    @RegisterExtension
+    public WireMockExtension wireMock = WireMockExtension.newInstance()
+        .options(options().dynamicPort())
+        .failOnUnmatchedRequests(true)
+        .build();
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private FakeEnvironment environment;
 
@@ -48,11 +52,11 @@ public class HttpFetcherTest {
 
     private File target;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         this.environment = new FakeEnvironment();
         this.log = mock(Log.class);
-        this.target = new File(this.temporaryFolder.getRoot(), "target");
+        this.target = new File(this.tempDir.toFile(), "target");
     }
 
     @Test
@@ -95,7 +99,7 @@ public class HttpFetcherTest {
     @Test
     public void usesProxyFromEnvironment() throws Exception {
         this.wireMock.stubFor(get(urlEqualTo("/file")).willReturn(ok("via proxy")));
-        this.environment.proxy = new ProxySettings("localhost", this.wireMock.port());
+        this.environment.proxy = new ProxySettings("localhost", this.wireMock.getPort());
         fetcher(null, null).fetch(URI.create("http://target.invalid/file"), this.target, Validators.NONE);
         assertThat(read(this.target), is("via proxy"));
     }

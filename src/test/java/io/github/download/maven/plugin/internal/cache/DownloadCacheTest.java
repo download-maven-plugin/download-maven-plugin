@@ -4,14 +4,16 @@ import io.github.download.maven.plugin.internal.checksum.Checksums;
 import java.io.File;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import org.apache.commons.codec.digest.DigestUtils;
 import java.io.IOException;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFile;
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static io.github.download.maven.plugin.internal.TestFiles.write;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -19,7 +21,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -29,8 +31,8 @@ public class DownloadCacheTest {
 
     private static final URI URI_UNDER_TEST = URI.create("http://example.invalid/file.txt");
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private Log log;
 
@@ -38,23 +40,23 @@ public class DownloadCacheTest {
 
     private File source;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         this.log = mock(Log.class);
         this.noChecksums = new Checksums(null, null, null, null, this.log);
-        this.source = this.temporaryFolder.newFile("file.txt");
+        this.source = newFile(this.tempDir, "file.txt");
         write(this.source, "v1");
     }
 
     @Test
     public void unknownUriIsNotCached() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         assertThat(cache.getArtifact(URI_UNDER_TEST, this.noChecksums), is(nullValue()));
     }
 
     @Test
     public void installCreatesMissingCacheDirectory() throws Exception {
-        final File dir = new File(this.temporaryFolder.getRoot(), "a/b/cache");
+        final File dir = new File(this.tempDir.toFile(), "a/b/cache");
         final DownloadCache cache = new DownloadCache(dir, this.log);
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         final File cached = cache.getArtifact(URI_UNDER_TEST, this.noChecksums);
@@ -64,7 +66,7 @@ public class DownloadCacheTest {
 
     @Test
     public void installFailsIfCacheDirectoryCannotBeCreated() throws Exception {
-        final File blocker = this.temporaryFolder.newFile("blocker");
+        final File blocker = newFile(this.tempDir, "blocker");
         final DownloadCache cache = new DownloadCache(new File(blocker, "cache"), this.log);
         final IOException error = assertThrows(
             IOException.class,
@@ -75,7 +77,7 @@ public class DownloadCacheTest {
 
     @Test
     public void cachedEntryNotMatchingChecksumIsIgnored() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         final Checksums other = new Checksums(DigestUtils.md5Hex("v2"), null, null, null, this.log);
         assertThat(cache.getArtifact(URI_UNDER_TEST, other), is(nullValue()));
@@ -83,7 +85,7 @@ public class DownloadCacheTest {
 
     @Test
     public void installReplacesEntryWhoseFileWasDeleted() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         Files.delete(cache.getArtifact(URI_UNDER_TEST, this.noChecksums).toPath());
         assertThat(cache.getArtifact(URI_UNDER_TEST, this.noChecksums), is(nullValue()));
@@ -94,7 +96,7 @@ public class DownloadCacheTest {
 
     @Test
     public void installKeepsExistingValidEntry() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         write(this.source, "v2");
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
@@ -103,7 +105,7 @@ public class DownloadCacheTest {
 
     @Test
     public void entriesArePersistedAcrossInstances() throws Exception {
-        final File dir = this.temporaryFolder.newFolder("cache");
+        final File dir = newFolder(this.tempDir, "cache");
         new DownloadCache(dir, this.log).install(URI_UNDER_TEST, this.source, this.noChecksums);
         final File cached = new DownloadCache(dir, this.log).getArtifact(URI_UNDER_TEST, this.noChecksums);
         assertThat(read(cached), is("v1"));
@@ -113,7 +115,7 @@ public class DownloadCacheTest {
 
     @Test
     public void storeCachesNewFileWithValidators() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         final Validators validators = new Validators("\"v1\"", "Sat, 01 Jan 2000 00:00:00 GMT");
         assertThat(cache.store(URI_UNDER_TEST, this.source, this.noChecksums, validators), is(true));
         assertThat(read(cache.getArtifact(URI_UNDER_TEST, this.noChecksums)), is("v1"));
@@ -122,7 +124,7 @@ public class DownloadCacheTest {
 
     @Test
     public void storeReplacesChangedContentAndValidators() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.store(URI_UNDER_TEST, this.source, this.noChecksums, new Validators("\"v1\"", null));
         write(this.source, "v2");
         final Validators second = new Validators("\"v2\"", null);
@@ -133,7 +135,7 @@ public class DownloadCacheTest {
 
     @Test
     public void storeReportsSameContentAsUnchangedButRecordsNewValidators() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         final Validators validators = new Validators(null, "Sat, 01 Jan 2000 00:00:00 GMT");
         assertThat(cache.store(URI_UNDER_TEST, this.source, this.noChecksums, validators), is(false));
@@ -142,7 +144,7 @@ public class DownloadCacheTest {
 
     @Test
     public void storeForgetsValidatorsTheServerNoLongerSends() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.store(URI_UNDER_TEST, this.source, this.noChecksums, new Validators("\"v1\"", null));
         write(this.source, "v2");
         cache.store(URI_UNDER_TEST, this.source, this.noChecksums, Validators.NONE);
@@ -151,7 +153,7 @@ public class DownloadCacheTest {
 
     @Test
     public void noValidatorsForUnknownUriOrFileCachedWithoutThem() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         assertThat(cache.validators(URI_UNDER_TEST), is(Validators.NONE));
         cache.install(URI_UNDER_TEST, this.source, this.noChecksums);
         assertThat(cache.validators(URI_UNDER_TEST), is(Validators.NONE));
@@ -159,7 +161,7 @@ public class DownloadCacheTest {
 
     @Test
     public void validatorsArePersistedAcrossInstances() throws Exception {
-        final File dir = this.temporaryFolder.newFolder("cache");
+        final File dir = newFolder(this.tempDir, "cache");
         final Validators validators = new Validators("\"v1\"", null);
         new DownloadCache(dir, this.log).store(URI_UNDER_TEST, this.source, this.noChecksums, validators);
         assertThat(new DownloadCache(dir, this.log).validators(URI_UNDER_TEST), is(validators));
@@ -171,7 +173,7 @@ public class DownloadCacheTest {
      */
     @Test
     public void validatorsOfReplacedFileAreIgnored() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.store(URI_UNDER_TEST, this.source, this.noChecksums, new Validators("\"v1\"", null));
         write(cache.getArtifact(URI_UNDER_TEST, this.noChecksums), "written by an older plugin version");
         assertThat(cache.validators(URI_UNDER_TEST), is(Validators.NONE));
@@ -179,7 +181,7 @@ public class DownloadCacheTest {
 
     @Test
     public void unreadableValidatorsAreIgnored() throws Exception {
-        final DownloadCache cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        final DownloadCache cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         cache.store(URI_UNDER_TEST, this.source, this.noChecksums, new Validators("\"v1\"", null));
         final File cached = cache.getArtifact(URI_UNDER_TEST, this.noChecksums);
         write(new File(cached.getPath() + ".meta"), "etag=\\u00zz");
@@ -191,7 +193,7 @@ public class DownloadCacheTest {
      */
     @Test
     public void cachedFileInUseKeepsItsContent() throws Exception {
-        final File dir = this.temporaryFolder.newFolder("cache");
+        final File dir = newFolder(this.tempDir, "cache");
         final DownloadCache cache = InUseCaches.create(dir, this.log);
         final Validators validators = new Validators("\"v1\"", null);
         cache.store(URI_UNDER_TEST, this.source, this.noChecksums, validators);
@@ -213,7 +215,7 @@ public class DownloadCacheTest {
      */
     @Test
     public void validatorsAreKeptOutOfTheIndex() throws Exception {
-        final File dir = this.temporaryFolder.newFolder("cache");
+        final File dir = newFolder(this.tempDir, "cache");
         new DownloadCache(dir, this.log)
             .store(URI_UNDER_TEST, this.source, this.noChecksums, new Validators("\"v1\"", null));
         final FileBackedIndex index = new FileBackedIndex(dir, this.log);

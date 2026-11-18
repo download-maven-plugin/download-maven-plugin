@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -23,11 +24,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.maven.plugin.logging.Log;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static io.github.download.maven.plugin.internal.TestFiles.newFolder;
 import static io.github.download.maven.plugin.internal.TestFiles.read;
 import static io.github.download.maven.plugin.internal.TestFiles.write;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -36,7 +37,7 @@ import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.emptyArray;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -51,8 +52,8 @@ public class DownloaderTest {
 
     private static final String OUTPUT_FILE_NAME = "file.txt";
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public Path tempDir;
 
     private File outputDirectory;
 
@@ -68,11 +69,11 @@ public class DownloaderTest {
 
     private Log log;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
-        this.outputDirectory = this.temporaryFolder.newFolder("out");
+        this.outputDirectory = newFolder(this.tempDir, "out");
         this.log = mock(Log.class);
-        this.cache = new DownloadCache(this.temporaryFolder.newFolder("cache"), this.log);
+        this.cache = new DownloadCache(newFolder(this.tempDir, "cache"), this.log);
         this.fetcher = new FakeFetcher();
         this.unpacker = new FakeUnpacker();
         this.changed = new CopyOnWriteArrayList<>();
@@ -528,7 +529,7 @@ public class DownloaderTest {
      */
     @Test
     public void downloadedFileIsUnpackedWhenCachedFileIsInUse() throws Exception {
-        final DownloadCache cache = InUseCaches.create(this.temporaryFolder.newFolder("in-use"), this.log);
+        final DownloadCache cache = InUseCaches.create(newFolder(this.tempDir, "in-use"), this.log);
         this.fetcher.serve(URI_UNDER_TEST, "archive 1");
         this.fetcher.serve(URI_UNDER_TEST, "archive 2");
         download(r -> r.cache(cache).unpackWhenChanged(true));
@@ -543,7 +544,7 @@ public class DownloaderTest {
 
     @Test
     public void downloadedFileIsCopiedWhenCachedFileIsInUse() throws Exception {
-        final DownloadCache cache = InUseCaches.create(this.temporaryFolder.newFolder("in-use"), this.log);
+        final DownloadCache cache = InUseCaches.create(newFolder(this.tempDir, "in-use"), this.log);
         this.fetcher.serve(URI_UNDER_TEST, "v1");
         this.fetcher.serve(URI_UNDER_TEST, "v2");
         download(r -> r.cache(cache));
