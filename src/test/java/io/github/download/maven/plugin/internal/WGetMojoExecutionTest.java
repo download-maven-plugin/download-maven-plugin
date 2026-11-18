@@ -346,7 +346,7 @@ public class WGetMojoExecutionTest {
 
     @Test
     public void followsRedirectsByDefault() throws Exception {
-        for (final int code : new int[] {301, 302, 303}) {
+        for (final int code : new int[] {301, 302, 303, 307, 308}) {
             stubRedirect(code);
             createMojo(m -> {
                 set(m, "uri", URI.create(this.wireMock.baseUrl() + "/" + code));
@@ -358,7 +358,7 @@ public class WGetMojoExecutionTest {
 
     @Test
     public void redirectFailsIfFollowRedirectsIsOff() throws Exception {
-        for (final int code : new int[] {301, 302, 303}) {
+        for (final int code : new int[] {301, 302, 303, 307, 308}) {
             stubRedirect(code);
             final MojoExecutionException error = assertThrows(
                 MojoExecutionException.class,
