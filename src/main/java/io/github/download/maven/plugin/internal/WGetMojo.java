@@ -298,9 +298,12 @@ public final class WGetMojo extends AbstractMojo {
     private boolean checkSignature;
 
     /**
-     * Whether to follow redirects (301 Moved Permanently, 302 Found, 303 See Other).
+     * Whether to follow redirects (301 Moved Permanently, 302 Found, 303 See Other,
+     * 307 Temporary Redirect, 308 Permanent Redirect).
      * <p>If this option is disabled and the returned resource returns a redirect, the plugin
-     * will report an error and exit unless {@link #failOnError} is {@code false}.</p>
+     * will report an error and exit unless {@link #failOnError} is {@code false}. The same
+     * happens for a redirect that can't be followed, such as 300 Multiple Choices: the body
+     * of a redirect is never saved as the file.</p>
      */
     @Parameter(property = "download.plugin.followRedirects", defaultValue = "true")
     private boolean followRedirects = true;

@@ -273,21 +273,45 @@ public class HttpFileRequesterTest {
     }
 
     /**
-     * 3xx responses fail the download when redirects are disabled.
+     * 3xx responses fail the download when redirects are disabled, whatever the code:
+     * the body is a redirect page, not the resource (issue #332: 307 and 308 were saved).
      */
     @Test
     public void testRedirectFailsWhenRedirectsDisabled() {
-        this.wireMock.stubFor(get(anyUrl()).willReturn(temporaryRedirect("/elsewhere")
-            .withStatus(302)));
+        for (final int code : new int[]{300, 301, 302, 303, 305, 306, 307, 308}) {
+            this.wireMock.stubFor(get(anyUrl()).willReturn(temporaryRedirect("/elsewhere")
+                .withStatus(code).withBody("<html>Moved</html>")));
+
+            final DownloadFailureException error = assertThrows(
+                "redirect " + code,
+                DownloadFailureException.class,
+                () -> createFileRequesterBuilder()
+                    .build()
+                    .download(this.outputFile, emptyList())
+            );
+            assertThat("redirect " + code, error.getHttpCode(), is(code));
+            assertThat("redirect " + code, error.getMessage(), containsString("followRedirects is false"));
+            assertThat("redirect " + code, this.outputFile.exists(), is(false));
+        }
+    }
+
+    /**
+     * A 3xx the client doesn't follow, such as {@code 300 Multiple Choices}, isn't saved either.
+     */
+    @Test
+    public void testUnfollowableRedirectFailsWhenRedirectsEnabled() {
+        this.wireMock.stubFor(get(anyUrl()).willReturn(aResponse().withStatus(300).withBody("<html>Pick one</html>")));
 
         final DownloadFailureException error = assertThrows(
             DownloadFailureException.class,
             () -> createFileRequesterBuilder()
+                .withRedirectsEnabled(true)
                 .build()
                 .download(this.outputFile, emptyList())
         );
-        assertThat(error.getHttpCode(), is(302));
-        assertThat(error.getMessage(), containsString("followRedirects is false"));
+        assertThat(error.getHttpCode(), is(300));
+        assertThat(error.getMessage(), containsString("the redirect can't be followed"));
+        assertThat(this.outputFile.exists(), is(false));
     }
 
     /**

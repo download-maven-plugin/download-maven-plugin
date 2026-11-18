@@ -20,9 +20,8 @@ package io.github.download.maven.plugin.internal;
  */
 @SuppressWarnings("checkstyle:JavadocVariable")
 public enum HttpCodes {
-    MOVED_PERMANENTLY(301),
+    MULTIPLE_CHOICES(300),
     NOT_MODIFIED(304),
-    SEE_OTHER(303),
     BAD_REQUEST(400),
     TOO_MANY_REQUESTS(429),
     INTERNAL_SERVER_ERROR(500);

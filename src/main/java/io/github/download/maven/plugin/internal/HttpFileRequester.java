@@ -119,7 +119,8 @@ public final class HttpFileRequester {
     }
 
     /**
-     * Handles response from the server: fails on errors and unfollowed redirects, saves the body
+     * Handles response from the server: fails on errors and on any redirect that wasn't followed
+     * (any 3xx but {@code 304}), saves the body
      * otherwise, unless the server answered {@code 304 Not Modified}.
      * @param uri Request uri.
      * @param outputFile Output file for the download request.
@@ -136,13 +137,19 @@ public final class HttpFileRequester {
                 response.getStatusLine().getReasonPhrase()
             );
         }
-        if (statusCode >= HttpCodes.MOVED_PERMANENTLY.getCode() && statusCode <= HttpCodes.SEE_OTHER.getCode()) {
+        // the body of any other 3xx is a redirect page, never the resource: with redirects enabled
+        // the client follows 301-303, 307 and 308 itself, so one that gets here couldn't be followed
+        if (statusCode >= HttpCodes.MULTIPLE_CHOICES.getCode()
+            && statusCode != HttpCodes.NOT_MODIFIED.getCode()) {
+            final String reason;
+            if (this.redirectsEnabled) {
+                reason = "Not downloading the resource because the redirect can't be followed.";
+            } else {
+                reason = "Not downloading the resource because followRedirects is false.";
+            }
             throw new DownloadFailureException(
                 statusCode,
-                String.format(
-                    "%s, Not downloading the resource because followRedirects is false.",
-                    response.getStatusLine().getReasonPhrase()
-                )
+                String.format("%s, %s", response.getStatusLine().getReasonPhrase(), reason)
             );
         }
         final Fetched result;
