@@ -88,7 +88,9 @@ and it only counts as changed if its content differs from the cached copy.
 
 ## Requirements
 
-Java 8 or greater
+To use the plugin:
+
+Java 8 or greater (CI tests Java 11, 17, 21 and 25)
 
 Maven
   - `3.6.3` or greater for plugin versions >= `1.11.0`
@@ -125,5 +127,5 @@ Are maintained at GitHub (links above).
 This project support GitHub PR, but enforce some rules for decent tracking: 1 Change Request == 1 PR == 1 commit, if a change can be made by iterations, then use a specific PR for each iteration.
 Ideally, every bugfix should be supplied with a unit or integration test. 
 
-Build requirements are specified in `.tools-versions`.
+Building the plugin and running its integration tests (`./mvnw verify -P its`) requires Java 11 or greater and Maven 3.6.3 or greater; the exact versions are in `.tool-versions`.
 
