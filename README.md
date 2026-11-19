@@ -127,5 +127,9 @@ Are maintained at GitHub (links above).
 This project support GitHub PR, but enforce some rules for decent tracking: 1 Change Request == 1 PR == 1 commit, if a change can be made by iterations, then use a specific PR for each iteration.
 Ideally, every bugfix should be supplied with a unit or integration test. 
 
+Significant design decisions are recorded as [Architecture Decision Records](docs/adr/README.md);
+please check them before proposing changes to supported Java/Maven versions or the download cache,
+and add a new record when your PR makes such a decision.
+
 Building the plugin and running its integration tests (`./mvnw verify -P its`) requires Java 11 or greater and Maven 3.6.3 or greater; the exact versions are in `.tool-versions`.
 
