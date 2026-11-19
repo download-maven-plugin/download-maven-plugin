@@ -28,7 +28,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
-        java: [11, 17, 21]
+        java: [11, 17, 21, 25]
         maven: ['3.9.16']
         jdk: ['temurin']
         # the oldest supported Maven (see <prerequisites> in pom.xml) on the oldest tested Java

@@ -82,7 +82,7 @@
         <url>https://github.com/download-maven-plugin/download-maven-plugin</url>
     </scm>
 
-    <!-- Maven 3.2.5 or later is required due to the dependency on Plexus/Sisu -->
+    <!-- Minimum Maven version for plugin users; becomes requiredMavenVersion in plugin.xml -->
     <prerequisites>
         <maven>${maven.version}</maven>
     </prerequisites>
@@ -97,8 +97,10 @@
         <project.build.resourceEncoding>UTF-8</project.build.resourceEncoding>
 
         <httpclient.version>4.5.14</httpclient.version>
-        <maven.compiler.target>8</maven.compiler.target>
-        <maven.compiler.source>8</maven.compiler.source>
+        <!-- Users may run the plugin on Java 8; release (unlike source/target) also rejects newer JDK APIs -->
+        <maven.compiler.release>8</maven.compiler.release>
+        <!-- Test dependencies (Mockito 5, WireMock 3, Checkstyle 10) require Java 11 -->
+        <maven.compiler.testRelease>11</maven.compiler.testRelease>
         <maven.version>3.6.3</maven.version>
         <sca.skip>false</sca.skip>
     </properties>
@@ -135,6 +137,13 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <!-- Pinned: the default version depends on the Maven running the build (3.1 under Maven 3.6.3),
+                     and only 3.6+ supports release/testRelease -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -269,7 +278,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-invoker-plugin</artifactId>
-                        <version>3.6.0</version>
+                        <version>3.10.1</version>
                         <executions>
                             <execution>
                                 <phase>integration-test</phase>
@@ -443,13 +452,13 @@
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-retry</artifactId>
-            <!-- We stay on versions below 2 in order to support java 11-->
+            <!-- 2.x requires Java 17; we stay on 1.x to support Java 8 at runtime -->
             <version>1.7.1</version>
         </dependency>
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-core</artifactId>
-            <!-- We stay on versions below 2 in order to support java 11-->
+            <!-- 2.x requires Java 17; we stay on 1.x to support Java 8 at runtime -->
             <version>1.7.1</version>
         </dependency>
         <dependency>
